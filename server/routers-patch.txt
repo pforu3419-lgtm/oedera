@@ -1,0 +1,22 @@
+    adjustStock: adminProcedure
+      .input(
+        z.object({
+          productId: z.number(),
+          quantity: z.number(),
+          type: z.enum(["in", "out", "adjustment"]),
+          reason: z.string(),
+        })
+      )
+      .mutation(({ input, ctx }) =>
+        db.recordStockMovement({
+          productId: input.productId,
+          movementType: input.type,
+          quantity: input.quantity,
+          reason: input.reason,
+          userId: ctx.user.id,
+        })
+      ),
+    
+    getMovementHistory: publicProcedure
+      .input(z.object({ productId: z.number() }))
+      .query(({ input }) => db.getStockMovementHistory(input.productId)),

@@ -1,0 +1,40 @@
+# MongoDB Compass Connection Strings (แก้ปัญหา SSL)
+
+## Connection String สำหรับแก้ปัญหา SSL Alert 80
+
+### Option 1: ใช้ TLS (แนะนำ)
+```
+mongodb+srv://pforu3419_db_user:LoDVFyFWaBERGwLQ@clusterpos.mhpcwix.mongodb.net/ordera?tls=true
+```
+
+### Option 2: ใช้ SSL
+```
+mongodb+srv://pforu3419_db_user:LoDVFyFWaBERGwLQ@clusterpos.mhpcwix.mongodb.net/ordera?ssl=true
+```
+
+### Option 3: ปิดการตรวจสอบ Certificate (สำหรับทดสอบเท่านั้น)
+```
+mongodb+srv://pforu3419_db_user:LoDVFyFWaBERGwLQ@clusterpos.mhpcwix.mongodb.net/ordera?tlsAllowInvalidCertificates=true
+```
+
+### Option 4: ระบุ TLS Version
+```
+mongodb+srv://pforu3419_db_user:LoDVFyFWaBERGwLQ@clusterpos.mhpcwix.mongodb.net/ordera?tls=true&tlsMinVersion=TLSv1.2
+```
+
+## วิธีใช้ใน MongoDB Compass
+
+1. เปิด MongoDB Compass
+2. คลิก "New Connection"
+3. วาง Connection String ด้านบน (เลือก Option 1 ก่อน)
+4. คลิก "Connect"
+
+## ถ้ายังไม่ได้
+
+ลองใช้วิธี "Fill in connection fields individually":
+- Hostname: `clusterpos.mhpcwix.mongodb.net`
+- Username: `pforu3419_db_user`
+- Password: `LoDVFyFWaBERGwLQ`
+- Authentication Database: `admin`
+- SSL/TLS: ✅ Enable
+- SSL/TLS Certificate: System CA

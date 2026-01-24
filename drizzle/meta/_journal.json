@@ -1,0 +1,62 @@
+{
+  "version": "7",
+  "dialect": "mysql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "5",
+      "when": 1768830018450,
+      "tag": "0000_broad_tombstone",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "5",
+      "when": 1768839885068,
+      "tag": "0001_sad_mister_sinister",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "5",
+      "when": 1768841341926,
+      "tag": "0002_cold_stone_men",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "5",
+      "when": 1768886013322,
+      "tag": "0003_narrow_toad",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "5",
+      "when": 1768886640512,
+      "tag": "0004_aspiring_captain_cross",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "5",
+      "when": 1768889342542,
+      "tag": "0005_low_proemial_gods",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "5",
+      "when": 1768890467757,
+      "tag": "0006_oval_gravity",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "5",
+      "when": 1768897179358,
+      "tag": "0007_reflective_daimon_hellstrom",
+      "breakpoints": true
+    }
+  ]
+}
