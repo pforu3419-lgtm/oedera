@@ -293,6 +293,18 @@ export const appRouter = router({
         const orgId = db.getUserOrganizationId(ctx.user);
         return db.updateCategory(id, data, orgId);
       }),
+
+    delete: managerProcedure
+      .input(z.object({ id: z.number() }))
+      .mutation(async ({ input, ctx }) => {
+        const orgId = db.getUserOrganizationId(ctx.user);
+        await db.deleteCategory(input.id, orgId);
+        return { success: true };
+      }),
+
+    fixDuplicateIds: managerProcedure.mutation(async () => {
+      return db.fixDuplicateCategoryIds();
+    }),
   }),
 
   // ============ PRODUCTS ============
@@ -842,11 +854,18 @@ export const appRouter = router({
       )
       .query(async ({ input, ctx }) => {
         const orgId = db.getUserOrganizationId(ctx.user);
+        const start = new Date(input.startDate);
+        start.setUTCHours(0, 0, 0, 0);
+        const end = new Date(input.endDate);
+        end.setUTCHours(23, 59, 59, 999);
         const transactions = await db.getTransactionsByDateRange(
-          input.startDate,
-          input.endDate,
+          start,
+          end,
           orgId
         );
+        const transactionIds = transactions.map((t) => t.id);
+        const allItems = await db.getTransactionItemsByTransactionIds(transactionIds);
+        const totalItems = allItems.reduce((sum, i) => sum + (i.quantity || 0), 0);
         
         const totalSales = transactions.reduce(
           (sum, t) => sum + parseFloat(t.total || "0"),
@@ -863,6 +882,7 @@ export const appRouter = router({
 
         return {
           totalTransactions: transactions.length,
+          totalItems,
           totalSales,
           totalTax,
           totalDiscount,
@@ -880,9 +900,13 @@ export const appRouter = router({
       )
       .query(async ({ input, ctx }) => {
         const orgId = db.getUserOrganizationId(ctx.user);
+        const start = new Date(input.startDate);
+        start.setUTCHours(0, 0, 0, 0);
+        const end = new Date(input.endDate);
+        end.setUTCHours(23, 59, 59, 999);
         const topProducts = await db.getTopSellingProducts(
-          input.startDate,
-          input.endDate,
+          start,
+          end,
           input.limit ?? 10,
           orgId
         );
@@ -898,9 +922,13 @@ export const appRouter = router({
       )
       .query(async ({ input, ctx }) => {
         const orgId = db.getUserOrganizationId(ctx.user);
+        const start = new Date(input.startDate);
+        start.setUTCHours(0, 0, 0, 0);
+        const end = new Date(input.endDate);
+        end.setUTCHours(23, 59, 59, 999);
         const transactions = await db.getTransactionsByDateRange(
-          input.startDate,
-          input.endDate,
+          start,
+          end,
           orgId
         );
         
@@ -927,9 +955,13 @@ export const appRouter = router({
       )
       .query(async ({ input, ctx }) => {
         const orgId = db.getUserOrganizationId(ctx.user);
+        const start = new Date(input.startDate);
+        start.setUTCHours(0, 0, 0, 0);
+        const end = new Date(input.endDate);
+        end.setUTCHours(23, 59, 59, 999);
         const transactions = await db.getTransactionsByDateRange(
-          input.startDate,
-          input.endDate,
+          start,
+          end,
           orgId
         );
         
@@ -957,9 +989,13 @@ export const appRouter = router({
       )
       .query(async ({ input, ctx }) => {
         const orgId = db.getUserOrganizationId(ctx.user);
+        const start = new Date(input.startDate);
+        start.setUTCHours(0, 0, 0, 0);
+        const end = new Date(input.endDate);
+        end.setUTCHours(23, 59, 59, 999);
         const transactions = await db.getTransactionsByDateRange(
-          input.startDate,
-          input.endDate,
+          start,
+          end,
           orgId
         );
         
@@ -1007,9 +1043,13 @@ export const appRouter = router({
         const orgId = db.getUserOrganizationId(ctx.user);
         if (!orgId) return { rows: [] };
 
+        const start = new Date(input.startDate);
+        start.setUTCHours(0, 0, 0, 0);
+        const end = new Date(input.endDate);
+        end.setUTCHours(23, 59, 59, 999);
         let transactions = await db.getTransactionsByDateRange(
-          input.startDate,
-          input.endDate,
+          start,
+          end,
           orgId
         );
 

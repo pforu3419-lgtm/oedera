@@ -4,6 +4,7 @@ export interface ReportData {
   startDate: Date;
   endDate: Date;
   totalTransactions: number;
+  totalItems?: number; // จำนวนชิ้นสินค้าที่ขาย (รวม quantity ทุกรายการ)
   totalSales: number;
   totalTax: number;
   totalDiscount: number;
@@ -20,6 +21,7 @@ export interface ReportData {
 export function exportToExcel(reportData: ReportData) {
   const workbook = XLSX.utils.book_new();
 
+  const itemCount = reportData.totalItems ?? reportData.totalTransactions;
   // สรุปรายงาน
   const summaryData = [
     ['รายงานยอดขาย'],
@@ -28,8 +30,8 @@ export function exportToExcel(reportData: ReportData) {
     ['ยอดขายรวม', reportData.totalSales.toFixed(2)],
     ['ภาษีมูลค่าเพิ่ม', reportData.totalTax.toFixed(2)],
     ['ส่วนลดรวม', reportData.totalDiscount.toFixed(2)],
-    ['จำนวนรายการ', reportData.totalTransactions],
-    ['ค่าเฉลี่ยต่อรายการ', (reportData.totalSales / reportData.totalTransactions).toFixed(2)],
+    ['จำนวนชิ้น', itemCount],
+    ['ค่าเฉลี่ยต่อชิ้น', (reportData.totalSales / (itemCount || 1)).toFixed(2)],
   ];
 
   const summarySheet = XLSX.utils.aoa_to_sheet(summaryData);
@@ -168,8 +170,8 @@ export function exportToPDF(reportData: ReportData) {
           <div class="value">฿${reportData.totalSales.toFixed(2)}</div>
         </div>
         <div class="summary-item">
-          <label>จำนวนรายการ</label>
-          <div class="value">${reportData.totalTransactions}</div>
+          <label>จำนวนชิ้น</label>
+          <div class="value">${reportData.totalItems ?? reportData.totalTransactions}</div>
         </div>
         <div class="summary-item">
           <label>ภาษีมูลค่าเพิ่ม</label>

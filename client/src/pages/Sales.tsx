@@ -9,7 +9,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { trpc } from "@/lib/trpc";
-import { useMemo, useState } from "react";
+import { useMemo, useReducer, useState } from "react";
 import { Loader2, X, Search, Clock, DollarSign, User, Monitor, Receipt, History, Printer, Check } from "lucide-react";
 import { toast } from "sonner";
 import { useLocation } from "wouter";
@@ -32,9 +32,84 @@ interface SelectedCustomer {
   loyaltyPoints: number;
 }
 
+type CartAction =
+  | { type: "ADD"; product: any; toppings: Array<{ id: number; name: string; price: number }> }
+  | { type: "REMOVE"; productId: number; name: string }
+  | { type: "UPDATE_QTY"; productId: number; quantity: number }
+  | { type: "CLEAR" };
+
+function cartReducer(state: CartItem[], action: CartAction): CartItem[] {
+  switch (action.type) {
+    case "ADD": {
+      const { product, toppings } = action;
+      const productId = Number(product.id);
+      const basePrice = parseFloat(product.price);
+      const toppingsTotal = toppings.reduce((sum, t) => sum + t.price, 0);
+      const itemPrice = basePrice + toppingsTotal;
+      const tops = toppings;
+      // ต้องตรงทั้ง productId, ชื่อ และ toppings จึงถือว่าเป็นรายการเดียวกัน
+      // (ถ้า id ซ้ำแต่ชื่อต่าง = คนละสินค้า ไม่ merge กัน)
+      const existing = state.find(
+        (item) =>
+          item.productId === productId &&
+          item.name === product.name &&
+          JSON.stringify(item.toppings || []) === JSON.stringify(tops)
+      );
+      if (existing) {
+        return state.map((item) =>
+          item.productId === productId &&
+          item.name === product.name &&
+          JSON.stringify(item.toppings || []) === JSON.stringify(tops)
+            ? {
+                ...item,
+                quantity: item.quantity + 1,
+                subtotal: (item.quantity + 1) * itemPrice,
+              }
+            : item
+        );
+      }
+      return [
+        ...state,
+        {
+          productId,
+          name: product.name,
+          price: itemPrice.toFixed(2),
+          quantity: 1,
+          subtotal: itemPrice,
+          imageUrl: product.imageUrl,
+          toppings: tops.length > 0 ? tops : undefined,
+        },
+      ];
+    }
+    case "REMOVE":
+      return state.filter(
+        (item) => !(item.productId === action.productId && item.name === action.name)
+      );
+    case "UPDATE_QTY": {
+      const { productId, quantity } = action;
+      if (quantity <= 0) {
+        return state.filter((item) => item.productId !== productId);
+      }
+      return state.map((item) =>
+        item.productId === productId
+          ? {
+              ...item,
+              quantity,
+              subtotal: quantity * parseFloat(item.price),
+            }
+          : item
+      );
+    }
+    case "CLEAR":
+      return [];
+    default:
+      return state;
+  }
+}
+
 export default function Sales() {
   const [, setLocation] = useLocation();
-  const [cart, setCart] = useState<CartItem[]>([]);
+  const [cart, dispatchCart] = useReducer(cartReducer, []);
   const [selectedCategory, setSelectedCategory] = useState<number | undefined>();
   const [searchTerm, setSearchTerm] = useState("");
   const [paymentMethod, setPaymentMethod] = useState<"cash" | "transfer" | "card">("cash");
@@ -121,76 +196,23 @@ export default function Sales() {
 
   const handleConfirmToppings = () => {
     if (!selectedProductForTopping) return;
-    
     const product = selectedProductForTopping;
-    const basePrice = parseFloat(product.price);
-    const toppingsTotal = selectedToppings.reduce((sum, t) => sum + t.price, 0);
-    const itemPrice = basePrice + toppingsTotal;
-    
-    const existingItem = cart.find(
-      (item) => 
-        item.productId === product.id &&
-        JSON.stringify(item.toppings || []) === JSON.stringify(selectedToppings)
-    );
-
-    if (existingItem) {
-      setCart(
-        cart.map((item) =>
-          item.productId === product.id &&
-          JSON.stringify(item.toppings || []) === JSON.stringify(selectedToppings)
-            ? {
-                ...item,
-                quantity: item.quantity + 1,
-                subtotal: (item.quantity + 1) * itemPrice,
-              }
-            : item
-        )
-      );
-    } else {
-      setCart([
-        ...cart,
-        {
-          productId: product.id,
-          name: product.name,
-          price: itemPrice.toFixed(2),
-          quantity: 1,
-          subtotal: itemPrice,
-          imageUrl: product.imageUrl,
-          toppings: selectedToppings.length > 0 ? selectedToppings : undefined,
-        },
-      ]);
-    }
-    
+    dispatchCart({ type: "ADD", product, toppings: selectedToppings });
     setShowToppingDialog(false);
     setSelectedProductForTopping(null);
     setSelectedToppings([]);
-    
-    const toppingsText = selectedToppings.length > 0 
-      ? ` + ${selectedToppings.map(t => t.name).join(", ")}`
+    const toppingsText = selectedToppings.length > 0
+      ? ` + ${selectedToppings.map((t) => t.name).join(", ")}`
       : "";
     toast.success(`เพิ่ม ${product.name}${toppingsText} ลงตะกร้า`);
   };
 
   const updateQuantity = (productId: number, quantity: number) => {
-    if (quantity <= 0) {
-      removeFromCart(productId);
-    } else {
-      setCart(
-        cart.map((item) =>
-          item.productId === productId
-            ? {
-                ...item,
-                quantity,
-                subtotal: quantity * parseFloat(item.price),
-              }
-            : item
-        )
-      );
-    }
+    dispatchCart({ type: "UPDATE_QTY", productId, quantity });
   };
 
-  const removeFromCart = (productId: number) => {
-    setCart(cart.filter((item) => item.productId !== productId));
+  const removeFromCart = (productId: number, name: string) => {
+    dispatchCart({ type: "REMOVE", productId, name });
   };
 
   // Calculations
@@ -357,7 +379,7 @@ export default function Sales() {
       toast.success("บันทึกการขายสำเร็จ");
       
       // Reset form
-      setCart([]);
+      dispatchCart({ type: "CLEAR" });
       setDiscountAmount("0");
       setRedeemPoints("0");
       setDiscountCode("");
@@ -421,8 +443,10 @@ export default function Sales() {
 
       {/* Main Content */}
       <div className="flex-1 flex overflow-hidden">
-        {/* Left Panel - Products */}
-        <div className="flex-1 flex flex-col bg-white p-6 overflow-hidden">
+        {/* Left Panel - Products (ปิด pointer เมื่อเปิด Dialog ท็อปปิ้ง เพื่อไม่ให้กดสินค้าอื่นแล้วเขียนทับ selectedProduct) */}
+        <div
+          className={`flex-1 flex flex-col bg-white p-6 overflow-hidden ${showToppingDialog ? "pointer-events-none" : ""}`}
+        >
           {/* Category & Actions */}
           <div className="flex items-center justify-between mb-6 gap-4">
             <Select
@@ -562,7 +586,7 @@ export default function Sales() {
                     <Button
                       variant="ghost"
                       size="icon"
-                      onClick={() => removeFromCart(item.productId)}
+                      onClick={() => removeFromCart(item.productId, item.name)}
                       className="min-w-[var(--touch-target)] min-h-[var(--touch-target)]"
                     >
                       <X className="h-5 w-5 text-destructive" />
@@ -790,7 +814,16 @@ export default function Sales() {
       </Dialog>
 
       {/* Toppings Selection Dialog */}
-      <Dialog open={showToppingDialog} onOpenChange={setShowToppingDialog}>
+      <Dialog
+        open={showToppingDialog}
+        onOpenChange={(open) => {
+          setShowToppingDialog(open);
+          if (!open) {
+            setSelectedProductForTopping(null);
+            setSelectedToppings([]);
+          }
+        }}
+      >
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle className="text-xl">

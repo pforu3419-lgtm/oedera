@@ -529,6 +529,67 @@ export async function updateCategory(
   await categories.updateOne(query, { $set: { ...data, updatedAt: new Date() } });
 }
 
+export async function deleteCategory(id: number, organizationId?: number | null) {
+  const categories = await getCollection<any>("categories");
+  const products = await getCollection<any>("products");
+  const productQuery: any = { categoryId: id };
+  if (organizationId !== undefined && organizationId !== null) {
+    productQuery.organizationId = organizationId;
+  }
+  const count = await products.countDocuments(productQuery);
+  if (count > 0) {
+    throw new Error("ไม่สามารถลบได้ เนื่องจากมีสินค้าในหมวดหมู่นี้");
+  }
+  const query: any = { id };
+  if (organizationId !== undefined && organizationId !== null) {
+    query.organizationId = organizationId;
+  }
+  await categories.deleteOne(query);
+}
+
+/**
+ * แก้หมวดหมู่ที่ id ซ้ำใน org เดียวกัน (ทำให้เลือก/บันทึกหมวดถูกต้อง)
+ * ใช้: pnpm exec tsx scripts/fix-duplicate-category-ids.ts
+ * หรือกดปุ่ม "แก้ไข id หมวดหมู่ที่ซ้ำ" ใน Dialog จัดการหมวดหมู่
+ */
+export async function fixDuplicateCategoryIds(): Promise<{ updated: number }> {
+  const categories = await getCollection<any>("categories");
+  const all = await categories.find({}).sort({ organizationId: 1, id: 1, _id: 1 }).toArray();
+  const byKey = new Map<string, any[]>();
+  for (const c of all) {
+    const org = c.organizationId ?? "_";
+    const key = `${org}:${c.id}`;
+    if (!byKey.has(key)) byKey.set(key, []);
+    byKey.get(key)!.push(c);
+  }
+  let maxId = 0;
+  for (const c of all) if (typeof c.id === "number" && c.id > maxId) maxId = c.id;
+  let updated = 0;
+  for (const [, docs] of byKey) {
+    if (docs.length <= 1) continue;
+    docs.sort((a, b) => (a._id < b._id ? -1 : 1));
+    for (let i = 1; i < docs.length; i++) {
+      maxId += 1;
+      const newId = maxId;
+      await categories.updateOne(
+        { _id: docs[i]._id },
+        { $set: { id: newId, updatedAt: new Date() } }
+      );
+      updated++;
+      console.log(`[fixDuplicateCategoryIds] ${docs[i].name} (org ${docs[i].organizationId}) id ${docs[i].id} -> ${newId}`);
+    }
+  }
+  if (maxId > 0) {
+    const counters = await getCollection<{ _id: string; seq: number }>("counters");
+    await counters.updateOne(
+      { _id: "categories" },
+      { $set: { seq: maxId } },
+      { upsert: true }
+    );
+  }
+  return { updated };
+}
+
 // ============ PRODUCTS ============
 export async function getProducts(filters?: {
   categoryId?: number;
@@ -538,7 +599,7 @@ export async function getProducts(filters?: {
 }) {
   const products = await getCollection<any>("products");
   const query: Record<string, unknown> = {};
-  if (filters?.categoryId) query.categoryId = filters.categoryId;
+  if (filters && filters.categoryId != null) query.categoryId = filters.categoryId;
   // Default to "active" if status is not specified
   query.status = filters?.status || "active";
   if (filters?.search) query.name = { $regex: filters.search, $options: "i" };
@@ -1050,6 +1111,12 @@ export async function createTransactionItem(data: {
 export async function getTransactionItems(transactionId: number) {
   const items = await getCollection<any>("transactionItems");
   return items.find({ transactionId }).toArray();
+}
+
+export async function getTransactionItemsByTransactionIds(transactionIds: number[]) {
+  if (transactionIds.length === 0) return [];
+  const items = await getCollection<any>("transactionItems");
+  return items.find({ transactionId: { $in: transactionIds } }).toArray();
 }
 
 export async function getTopSellingProducts(

@@ -8,11 +8,12 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { trpc } from "@/lib/trpc";
 import { useState } from "react";
-import { Loader2, Plus, Edit2, Trash2, Upload, X, ArrowLeft, AlertTriangle, History, Package, Warehouse } from "lucide-react";
+import { Loader2, Plus, Edit2, Trash2, Upload, X, ArrowLeft, AlertTriangle, History, Package, Warehouse, List } from "lucide-react";
 import { toast } from "sonner";
 import { useLocation } from "wouter";
 
@@ -44,10 +45,14 @@ export default function ProductsAndInventory() {
   const [selectedCategory, setSelectedCategory] = useState<number | undefined>();
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [isCategoryDialogOpen, setIsCategoryDialogOpen] = useState(false);
+  const [isCategoryManageOpen, setIsCategoryManageOpen] = useState(false);
+  const [editingCategoryId, setEditingCategoryId] = useState<number | null>(null);
+  const [editingCategoryName, setEditingCategoryName] = useState("");
   const [editingProduct, setEditingProduct] = useState<ProductForm | null>(null);
   const [newCategoryName, setNewCategoryName] = useState("");
   const [imageFile, setImageFile] = useState<File | null>(null);
   const [imagePreview, setImagePreview] = useState<string>("");
+  const [selectedCategoryIndex, setSelectedCategoryIndex] = useState(0);
   const [formData, setFormData] = useState<ProductForm>({
     sku: "",
     name: "",
@@ -73,7 +78,7 @@ export default function ProductsAndInventory() {
   const categoriesQuery = trpc.categories.list.useQuery();
   const productsQuery = trpc.products.list.useQuery(
     {
-      categoryId: selectedCategory,
+      ...(selectedCategory != null ? { categoryId: selectedCategory } : {}),
       search: searchTerm,
     },
     {
@@ -126,6 +131,26 @@ export default function ProductsAndInventory() {
       utils.categories.list.invalidate();
     },
   });
+  const updateCategoryMutation = trpc.categories.update.useMutation({
+    onSuccess: () => {
+      utils.categories.list.invalidate();
+    },
+  });
+  const deleteCategoryMutation = trpc.categories.delete.useMutation({
+    onSuccess: () => {
+      utils.categories.list.invalidate();
+    },
+  });
+  const fixDuplicateIdsMutation = trpc.categories.fixDuplicateIds.useMutation({
+    onSuccess: (res) => {
+      utils.categories.list.invalidate();
+      utils.products.list.invalidate();
+      toast.success(res.updated > 0 ? `แก้ไข id หมวดหมู่ที่ซ้ำแล้ว ${res.updated} รายการ` : "ไม่พบหมวดหมู่ที่ id ซ้ำ");
+    },
+    onError: (e) => {
+      toast.error(e.message || "แก้ไขไม่สำเร็จ");
+    },
+  });
   const adjustStockMutation = trpc.inventory.adjustStock.useMutation({
     onSuccess: () => {
       utils.inventory.list.invalidate();
@@ -158,6 +183,8 @@ export default function ProductsAndInventory() {
     if (product) {
       console.log("[handleOpenDialog] Opening dialog for product:", product.id, product.name);
       setEditingProduct(product);
+      const catIdx = categories.findIndex((c) => c.id === product.categoryId);
+      setSelectedCategoryIndex(catIdx >= 0 ? catIdx : 0);
       setFormData({
         id: product.id,
         sku: product.sku,
@@ -174,10 +201,11 @@ export default function ProductsAndInventory() {
     } else {
       console.log("[handleOpenDialog] Opening dialog for new product");
       setEditingProduct(null);
+      setSelectedCategoryIndex(0);
       setFormData({
         sku: "",
         name: "",
-        categoryId: 1,
+        categoryId: categories[0]?.id ?? 1,
         price: "",
         cost: "",
         status: "active",
@@ -255,6 +283,8 @@ export default function ProductsAndInventory() {
         ...formData,
         price: String(formData.price || "0"),
         cost: formData.cost ? String(formData.cost) : undefined,
+        // ใช้ categoryId จากตัวที่เลือกใน dropdown โดยตรง (selectedCategoryIndex) เพื่อไม่ให้กลับเป็น 1
+        categoryId: categories[selectedCategoryIndex]?.id ?? formData.categoryId,
       };
       
       // Handle imageUrl based on whether we're editing or creating
@@ -315,7 +345,7 @@ export default function ProductsAndInventory() {
       
       // Update cache optimistically
       utils.products.list.setData(
-        { categoryId: selectedCategory, search: searchTerm },
+        { ...(selectedCategory != null ? { categoryId: selectedCategory } : {}), search: searchTerm },
         updatedProducts
       );
       
@@ -357,6 +387,45 @@ export default function ProductsAndInventory() {
     } catch (error) {
       toast.error("เกิดข้อผิดพลาดในการเพิ่มหมวดหมู่");
       console.error(error);
+    }
+  };
+
+  const handleOpenCategoryManage = () => {
+    setEditingCategoryId(null);
+    setEditingCategoryName("");
+    setIsCategoryManageOpen(true);
+  };
+
+  const handleSaveCategoryEdit = async () => {
+    if (editingCategoryId == null || !editingCategoryName.trim()) {
+      toast.error("กรุณากรอกชื่อหมวดหมู่");
+      return;
+    }
+    try {
+      await updateCategoryMutation.mutateAsync({ id: editingCategoryId, name: editingCategoryName.trim() });
+      toast.success("แก้ไขหมวดหมู่สำเร็จ");
+      setEditingCategoryId(null);
+      setEditingCategoryName("");
+      await categoriesQuery.refetch();
+    } catch (error: any) {
+      toast.error(error?.message || error?.data?.message || "เกิดข้อผิดพลาดในการแก้ไข");
+    }
+  };
+
+  const handleCancelCategoryEdit = () => {
+    setEditingCategoryId(null);
+    setEditingCategoryName("");
+  };
+
+  const handleDeleteCategory = async (cat: { id: number; name: string }) => {
+    if (!confirm(`ต้องการลบหมวดหมู่ "${cat.name}" ใช่หรือไม่?`)) return;
+    try {
+      await deleteCategoryMutation.mutateAsync({ id: cat.id });
+      toast.success("ลบหมวดหมู่สำเร็จ");
+      await categoriesQuery.refetch();
+    } catch (error: any) {
+      const msg = error?.message || error?.data?.message || "เกิดข้อผิดพลาดในการลบ";
+      toast.error(msg);
     }
   };
 
@@ -467,6 +536,10 @@ export default function ProductsAndInventory() {
               <Plus className="mr-2 h-4 w-4" />
               เพิ่มหมวดหมู่
             </Button>
+            <Button variant="outline" onClick={handleOpenCategoryManage}>
+              <List className="mr-2 h-4 w-4" />
+              จัดการหมวดหมู่
+            </Button>
             <Button variant="add" onClick={() => handleOpenDialog()}>
               <Plus className="mr-2 h-4 w-4" />
               เพิ่มสินค้า
@@ -481,20 +554,22 @@ export default function ProductsAndInventory() {
             onChange={(e) => setSearchTerm(e.target.value)}
           />
 
-          <div className="flex gap-2 overflow-x-auto pb-2">
+          <div className="flex flex-wrap gap-2 pb-2">
             <Button
               variant={selectedCategory === undefined ? "default" : "outline"}
               onClick={() => setSelectedCategory(undefined)}
               size="sm"
+              className="shrink-0"
             >
               ทั้งหมด
             </Button>
-            {categories.map((category) => (
+            {categories.map((category, idx) => (
               <Button
-                key={category.id}
+                key={`cat-${category.id}-${idx}`}
                 variant={selectedCategory === category.id ? "default" : "outline"}
                 onClick={() => setSelectedCategory(category.id)}
                 size="sm"
+                className="shrink-0"
               >
                 {category.name}
               </Button>
@@ -764,7 +839,15 @@ export default function ProductsAndInventory() {
 
       {/* Product Dialog */}
       <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
-        <DialogContent className="max-w-2xl">
+        <DialogContent
+          className="max-w-2xl"
+          onInteractOutside={(e) => {
+            const el = e.target as HTMLElement;
+            if (el?.closest?.('[data-slot="select-content"]') || el?.closest?.('[role="listbox"]')) {
+              e.preventDefault();
+            }
+          }}
+        >
           <DialogHeader>
             <DialogTitle>
               {editingProduct ? "แก้ไขสินค้า" : "เพิ่มสินค้าใหม่"}
@@ -832,22 +915,27 @@ export default function ProductsAndInventory() {
 
               <div>
                 <label className="text-sm font-medium">หมวดหมู่</label>
-                <select
-                  value={formData.categoryId}
-                  onChange={(e) =>
-                    setFormData({
-                      ...formData,
-                      categoryId: parseInt(e.target.value),
-                    })
-                  }
-                  className="w-full px-3 py-2 border rounded text-sm"
+                <Select
+                  value={selectedCategoryIndex >= 0 && selectedCategoryIndex < categories.length ? String(selectedCategoryIndex) : ""}
+                  onValueChange={(v) => {
+                    const i = parseInt(v, 10);
+                    if (!Number.isNaN(i) && categories[i]) {
+                      setSelectedCategoryIndex(i);
+                      setFormData((prev) => ({ ...prev, categoryId: categories[i].id }));
+                    }
+                  }}
                 >
-                  {categories.map((cat) => (
-                    <option key={cat.id} value={cat.id}>
-                      {cat.name}
-                    </option>
-                  ))}
-                </select>
+                  <SelectTrigger className="w-full mt-0 h-11">
+                    <SelectValue placeholder="เลือกหมวดหมู่" />
+                  </SelectTrigger>
+                  <SelectContent className="z-[100]">
+                    {categories.map((cat, idx) => (
+                      <SelectItem key={`cat-${cat.id}-${idx}`} value={String(idx)}>
+                        {cat.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
 
               <div>
@@ -975,6 +1063,97 @@ export default function ProductsAndInventory() {
                 )}
               </Button>
             </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* จัดการหมวดหมู่ Dialog */}
+      <Dialog
+        open={isCategoryManageOpen}
+        onOpenChange={(open) => {
+          setIsCategoryManageOpen(open);
+          if (!open) handleCancelCategoryEdit();
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>จัดการหมวดหมู่</DialogTitle>
+          </DialogHeader>
+
+          <div className="space-y-3 max-h-80 overflow-y-auto">
+            {categories.length === 0 ? (
+              <p className="text-center text-muted-foreground py-4">ยังไม่มีหมวดหมู่</p>
+            ) : (
+              categories.map((cat, idx) => (
+                <div
+                  key={`cat-m-${cat.id}-${idx}`}
+                  className="flex items-center gap-2 p-2 border rounded"
+                >
+                  {editingCategoryId === cat.id ? (
+                    <>
+                      <Input
+                        value={editingCategoryName}
+                        onChange={(e) => setEditingCategoryName(e.target.value)}
+                        placeholder="ชื่อหมวดหมู่"
+                        className="flex-1"
+                      />
+                      <Button
+                        size="sm"
+                        onClick={handleSaveCategoryEdit}
+                        disabled={updateCategoryMutation.isPending}
+                      >
+                        {updateCategoryMutation.isPending ? (
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                        ) : (
+                          "บันทึก"
+                        )}
+                      </Button>
+                      <Button size="sm" variant="outline" onClick={handleCancelCategoryEdit}>
+                        ยกเลิก
+                      </Button>
+                    </>
+                  ) : (
+                    <>
+                      <span className="flex-1 font-medium">{cat.name}</span>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => {
+                          setEditingCategoryId(cat.id);
+                          setEditingCategoryName(cat.name);
+                        }}
+                        disabled={updateCategoryMutation.isPending || deleteCategoryMutation.isPending}
+                      >
+                        <Edit2 className="h-4 w-4" />
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => handleDeleteCategory(cat)}
+                        disabled={updateCategoryMutation.isPending || deleteCategoryMutation.isPending}
+                      >
+                        <Trash2 className="h-4 w-4 text-destructive" />
+                      </Button>
+                    </>
+                  )}
+                </div>
+              ))
+            )}
+          </div>
+
+          <div className="pt-3 border-t">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => fixDuplicateIdsMutation.mutate()}
+              disabled={fixDuplicateIdsMutation.isPending}
+            >
+              {fixDuplicateIdsMutation.isPending ? (
+                <Loader2 className="h-4 w-4 animate-spin mr-2" />
+              ) : null}
+              แก้ไข id หมวดหมู่ที่ซ้ำ (ถ้าเลือกแล้วบันทึกกลับเป็น 1)
+            </Button>
           </div>
         </DialogContent>
       </Dialog>

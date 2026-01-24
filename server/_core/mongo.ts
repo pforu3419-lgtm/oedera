@@ -26,7 +26,7 @@ export async function getMongoDb() {
 
   const uri = process.env.MONGODB_URI || "";
   if (!uri) {
-    throw new Error("MONGODB_URI is not configured. Please check your env.runtime file.");
+    throw new Error("MONGODB_URI is not configured. Set it in env.runtime (local) or in your host's Environment (e.g. Render dashboard).");
   }
   
   try {

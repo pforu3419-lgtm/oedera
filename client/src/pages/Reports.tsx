@@ -115,6 +115,7 @@ export default function Reports() {
       startDate,
       endDate,
       totalTransactions: salesData.totalTransactions,
+      totalItems: salesData.totalItems ?? salesData.totalTransactions,
       totalSales: salesData.totalSales,
       totalTax: salesData.totalTax,
       totalDiscount: salesData.totalDiscount,
@@ -136,6 +137,7 @@ export default function Reports() {
       startDate,
       endDate,
       totalTransactions: salesData.totalTransactions,
+      totalItems: salesData.totalItems ?? salesData.totalTransactions,
       totalSales: salesData.totalSales,
       totalTax: salesData.totalTax,
       totalDiscount: salesData.totalDiscount,
@@ -248,7 +250,7 @@ export default function Reports() {
               ฿{salesData?.totalSales.toFixed(2) || "0.00"}
             </div>
             <p className="text-xs text-muted-foreground mt-1">
-              {salesData?.totalTransactions || 0} รายการ
+              {salesData?.totalItems ?? salesData?.totalTransactions ?? 0} ชิ้น
             </p>
           </CardContent>
         </Card>
@@ -288,15 +290,15 @@ export default function Reports() {
         <Card>
           <CardHeader className="pb-2">
             <CardTitle className="text-sm font-medium text-muted-foreground">
-              ค่าเฉลี่ยต่อรายการ
+              ค่าเฉลี่ยต่อชิ้น
             </CardTitle>
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">
-              ฿{((salesData?.totalSales || 0) / (salesData?.totalTransactions || 1)).toFixed(2)}
+              ฿{((salesData?.totalSales || 0) / (salesData?.totalItems || salesData?.totalTransactions || 1)).toFixed(2)}
             </div>
             <p className="text-xs text-muted-foreground mt-1">
-              ต่อรายการขาย
+              ต่อชิ้นขาย
             </p>
           </CardContent>
         </Card>
@@ -479,7 +481,7 @@ export default function Reports() {
                 ตรวจประวัติการขาย – ว่าสินค้า/อาหารชิ้นนี้ พนักงานคนไหนเป็นคนขาย
               </CardTitle>
               <CardDescription>
-                เลือก「รวมบิล」= หนึ่งแถวต่อหนึ่งบิล (ตรงกับจำนวนรายการในการ์ดยอดขายรวม) คอลัมน์「พนักงานขาย」บอกว่าบิลนั้นใครขาย — ถ้าต้องการดูทุกบิลในช่วงนี้ ให้เลือกพนักงาน「ทั้งหมด」
+                การ์ด「ยอดขายรวม」นับเป็นจำนวนชิ้นสินค้าที่ขาย — เลือก「รวมบิล」= หนึ่งแถวต่อหนึ่งบิล คอลัมน์「พนักงานขาย」บอกว่าบิลนั้นใครขาย — ถ้าต้องการดูทุกบิลในช่วงนี้ ให้เลือกพนักงาน「ทั้งหมด」
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
@@ -558,7 +560,7 @@ export default function Reports() {
                       <TableRow>
                         <TableHead>วันที่/เวลา</TableHead>
                         <TableHead>เลขที่บิล</TableHead>
-                        <TableHead className="text-right">จำนวนรายการ</TableHead>
+                        <TableHead className="text-right">จำนวนชิ้น</TableHead>
                         <TableHead className="text-right">ยอดรวม</TableHead>
                         <TableHead>พนักงานขาย</TableHead>
                       </TableRow>
@@ -575,7 +577,8 @@ export default function Reports() {
                           .map(([txId, rows]) => {
                             const first = rows[0];
                             const total = rows.reduce((s, x) => s + parseFloat(x.subtotal), 0);
-                            return { txId, transactionNumber: first.transactionNumber, createdAt: first.createdAt, cashierName: first.cashierName, itemCount: rows.length, total };
+                            const itemCount = rows.reduce((s, r) => s + (r.quantity || 0), 0);
+                            return { txId, transactionNumber: first.transactionNumber, createdAt: first.createdAt, cashierName: first.cashierName, itemCount, total };
                           })
                           .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
                           .map((b) => (

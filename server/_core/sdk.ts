@@ -158,7 +158,7 @@ class SDKServer {
   private getSessionSecret() {
     const secret = ENV.cookieSecret;
     if (!secret || secret.length === 0) {
-      const errorMsg = "JWT_SECRET is not configured. Please set JWT_SECRET environment variable in env.runtime file.";
+      const errorMsg = "JWT_SECRET is not configured. Set JWT_SECRET in env.runtime (local) or in your host's Environment (e.g. Render dashboard).";
       console.error(`[SDK] ❌ ${errorMsg}`);
       console.error(`[SDK] Current ENV.cookieSecret value: "${secret}"`);
       console.error(`[SDK] process.env.JWT_SECRET: ${process.env.JWT_SECRET ? `"${process.env.JWT_SECRET}"` : "undefined"}`);

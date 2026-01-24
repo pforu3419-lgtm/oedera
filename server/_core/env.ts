@@ -10,6 +10,14 @@ if (envResult.error) {
   console.log(`[ENV] ✅ Environment file loaded from: ${envPath}`);
 }
 
+// Fallback: ถ้า MONGODB_URI ยังไม่มี (เช่น env.runtime หาย/โคลนใหม่) ลองโหลด .env
+if (!process.env.MONGODB_URI) {
+  const fallback = dotenv.config({ path: ".env" });
+  if (fallback.parsed?.MONGODB_URI) {
+    console.log("[ENV] ✅ MONGODB_URI loaded from .env (fallback)");
+  }
+}
+
 console.log(`[ENV] JWT_SECRET is ${process.env.JWT_SECRET ? `set (length: ${process.env.JWT_SECRET.length})` : "NOT SET"}`);
 
 export const ENV = {
