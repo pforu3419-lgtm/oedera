@@ -138,7 +138,6 @@ export default function Customers() {
     }
 
     try {
-      console.log("[handleSaveCustomer] Form data:", formData);
       
       // Prepare data for API
       const customerData: any = {
@@ -177,7 +176,6 @@ export default function Customers() {
         customerData.notes = formData.notes.trim();
       }
       
-      console.log("[handleSaveCustomer] Prepared customer data:", customerData);
       
       if (editingCustomer) {
         await updateCustomerMutation.mutateAsync({
@@ -282,9 +280,20 @@ export default function Customers() {
   return (
     <DashboardLayout>
       <div className="space-y-6 p-6">
-        <div>
-          <h1 className="text-3xl font-bold">ลูกค้าและสมาชิก</h1>
-          <p className="text-muted-foreground">จัดการข้อมูลลูกค้าและระบบสะสมคะแนน</p>
+        <div className="flex items-center gap-4">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setLocation("/")}
+            className="shrink-0 gap-2"
+          >
+            <ArrowLeft className="h-4 w-4" />
+            ย้อนกลับ
+          </Button>
+          <div>
+            <h1 className="text-3xl font-bold">ลูกค้าและสมาชิก</h1>
+            <p className="text-muted-foreground">จัดการข้อมูลลูกค้าและระบบสะสมคะแนน</p>
+          </div>
         </div>
 
         <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">

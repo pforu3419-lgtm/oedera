@@ -8,9 +8,11 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { trpc } from "@/lib/trpc";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { BarChart, Bar, LineChart, Line, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from "recharts";
-import { Calendar, Download, TrendingUp, FileText, Sheet, ArrowLeft, UserCheck } from "lucide-react";
+import { Calendar, Download, TrendingUp, FileText, Sheet, ArrowLeft, UserCheck, Search, Eye } from "lucide-react";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { exportToExcel, exportToPDF } from "@/lib/exportReport";
 import { useLocation } from "wouter";
+import DashboardLayout from "@/components/DashboardLayout";
 
 export default function Reports() {
   const [, setLocation] = useLocation();
@@ -21,12 +23,20 @@ export default function Reports() {
   const [endDate, setEndDate] = useState(new Date());
   const [auditCashierId, setAuditCashierId] = useState<string>("all");
   const [auditProductId, setAuditProductId] = useState<string>("all");
+  const [auditPaymentMethod, setAuditPaymentMethod] = useState<string>("all");
+  const [auditSearchTransactionNo, setAuditSearchTransactionNo] = useState("");
   const [auditViewMode, setAuditViewMode] = useState<"bills" | "items">("bills");
+  const [detailTxId, setDetailTxId] = useState<number | null>(null);
 
   // Fetch sales data
   const { data: salesData, isLoading: salesLoading } =
     trpc.reports.salesByDateRange.useQuery(
-      { startDate, endDate },
+      {
+        startDate,
+        endDate,
+        paymentMethod: auditPaymentMethod !== "all" ? auditPaymentMethod : undefined,
+        transactionNumberSearch: auditSearchTransactionNo.trim() || undefined,
+      },
       { enabled: !!startDate && !!endDate }
     );
 
@@ -59,11 +69,35 @@ export default function Reports() {
         endDate,
         cashierId: auditCashierId && auditCashierId !== "all" ? parseInt(auditCashierId, 10) : undefined,
         productId: auditProductId && auditProductId !== "all" ? parseInt(auditProductId, 10) : undefined,
+        paymentMethod: auditPaymentMethod !== "all" ? auditPaymentMethod : undefined,
+        transactionNumberSearch: auditSearchTransactionNo.trim() || undefined,
+        viewMode: auditViewMode, // ส่ง viewMode ไป API
       },
       { enabled: !!startDate && !!endDate }
     );
+  const { data: staffPerformance } = trpc.reports.staffPerformance.useQuery(
+    { startDate, endDate },
+    { enabled: !!startDate && !!endDate }
+  );
+  const { data: txDetail, isLoading: txDetailLoading } = trpc.reports.getTransactionDetail.useQuery(
+    { id: detailTxId! },
+    { enabled: detailTxId != null }
+  );
   const { data: usersList } = trpc.users.list.useQuery(undefined, { enabled: true });
   const { data: productsList } = trpc.products.list.useQuery({}, { enabled: true });
+
+  const paymentMethodLabel: Record<string, string> = {
+    cash: "เงินสด",
+    transfer: "โอนเงิน",
+    card: "บัตร",
+    ewallet: "อีวอลเล็ต",
+    mixed: "ผสม",
+  };
+  const paymentStatusLabel: Record<string, string> = {
+    completed: "ชำระแล้ว",
+    cancelled: "ยกเลิก",
+    refunded: "คืนเงิน",
+  };
 
   // Transform data for charts
   const dailySalesChartData = dailySalesData
@@ -115,7 +149,6 @@ export default function Reports() {
       startDate,
       endDate,
       totalTransactions: salesData.totalTransactions,
-      totalItems: salesData.totalItems ?? salesData.totalTransactions,
       totalSales: salesData.totalSales,
       totalTax: salesData.totalTax,
       totalDiscount: salesData.totalDiscount,
@@ -137,7 +170,6 @@ export default function Reports() {
       startDate,
       endDate,
       totalTransactions: salesData.totalTransactions,
-      totalItems: salesData.totalItems ?? salesData.totalTransactions,
       totalSales: salesData.totalSales,
       totalTax: salesData.totalTax,
       totalDiscount: salesData.totalDiscount,
@@ -154,33 +186,36 @@ export default function Reports() {
   };
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-4">
-          <Button
-            variant="ghost"
-            size="icon"
-            onClick={() => setLocation("/")}
-            className="hover:bg-muted"
-          >
-            <ArrowLeft className="h-5 w-5" />
-          </Button>
-          <div>
+    <DashboardLayout>
+      <div className="space-y-6">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-4">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setLocation("/")}
+              className="shrink-0 gap-2"
+            >
+              <ArrowLeft className="h-4 w-4" />
+              ย้อนกลับ
+            </Button>
+            <div>
             <h1 className="text-3xl font-bold tracking-tight">รายงานและวิเคราะห์</h1>
             <p className="text-muted-foreground mt-2">
               ดูข้อมูลยอดขาย สินค้าขายดี และการวิเคราะห์ธุรกิจ
             </p>
+            </div>
           </div>
-        </div>
-        <div className="flex gap-2">
-          <Button variant="outline" size="lg" onClick={handleExportPDF}>
-            <FileText className="mr-2 h-4 w-4" />
-            ส่งออก PDF
-          </Button>
-          <Button variant="outline" size="lg" onClick={handleExportExcel}>
-            <Sheet className="mr-2 h-4 w-4" />
-            ส่งออก Excel
-          </Button>
+          <div className="flex gap-2">
+            <Button variant="outline" size="lg" onClick={handleExportPDF}>
+              <FileText className="mr-2 h-4 w-4" />
+              ส่งออก PDF
+            </Button>
+            <Button variant="outline" size="lg" onClick={handleExportExcel}>
+              <Sheet className="mr-2 h-4 w-4" />
+              ส่งออก Excel
+            </Button>
+          </div>
         </div>
       </div>
 
@@ -237,8 +272,23 @@ export default function Reports() {
         </CardContent>
       </Card>
 
-      {/* Summary Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+      {/* Summary Cards — นับจากบิล (orders) เท่านั้น ห้ามนับจาก items */}
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-medium text-muted-foreground">
+              จำนวนบิล
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold">
+              {salesData?.totalTransactions ?? 0}
+            </div>
+            <p className="text-xs text-muted-foreground mt-1">
+              นับจากบิลจริงเท่านั้น
+            </p>
+          </CardContent>
+        </Card>
         <Card>
           <CardHeader className="pb-2">
             <CardTitle className="text-sm font-medium text-muted-foreground">
@@ -247,10 +297,10 @@ export default function Reports() {
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">
-              ฿{salesData?.totalSales.toFixed(2) || "0.00"}
+              ฿{salesData?.totalSales?.toFixed(2) || "0.00"}
             </div>
             <p className="text-xs text-muted-foreground mt-1">
-              {salesData?.totalItems ?? salesData?.totalTransactions ?? 0} ชิ้น
+              รวมจากยอดบิล (orders.total)
             </p>
           </CardContent>
         </Card>
@@ -290,15 +340,66 @@ export default function Reports() {
         <Card>
           <CardHeader className="pb-2">
             <CardTitle className="text-sm font-medium text-muted-foreground">
-              ค่าเฉลี่ยต่อชิ้น
+              ค่าเฉลี่ยต่อบิล
             </CardTitle>
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">
-              ฿{((salesData?.totalSales || 0) / (salesData?.totalItems || salesData?.totalTransactions || 1)).toFixed(2)}
+              ฿{((salesData?.totalSales || 0) / (salesData?.totalTransactions || 1)).toFixed(2)}
             </div>
             <p className="text-xs text-muted-foreground mt-1">
-              ต่อชิ้นขาย
+              ยอดขายรวม ÷ จำนวนบิล
+            </p>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-medium text-muted-foreground">
+              ค่าเฉลี่ยต่อบิล
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold">
+              ฿{((salesData?.totalSales || 0) / (salesData?.totalTransactions || 1)).toFixed(2)}
+            </div>
+            <p className="text-xs text-muted-foreground mt-1">
+              ต่อบิล
+            </p>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-medium text-muted-foreground">
+              บิลสูงสุด
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold">
+              ฿{(salesData?.transactions?.length
+                ? Math.max(...salesData.transactions.map((t) => parseFloat(t.total || "0")))
+                : 0
+              ).toFixed(2)}
+            </div>
+            <p className="text-xs text-muted-foreground mt-1">
+              ยอดสูงสุดต่อบิล
+            </p>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-medium text-muted-foreground">
+              พนักงานที่ขายสูงสุด
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold truncate" title={staffPerformance?.[0]?.cashierName}>
+              {staffPerformance?.[0]?.cashierName ?? "-"}
+            </div>
+            <p className="text-xs text-muted-foreground mt-1">
+              {staffPerformance?.[0] ? `฿${staffPerformance[0].totalSales.toFixed(2)} (${staffPerformance[0].billCount} บิล)` : "ไม่มีข้อมูล"}
             </p>
           </CardContent>
         </Card>
@@ -481,7 +582,7 @@ export default function Reports() {
                 ตรวจประวัติการขาย – ว่าสินค้า/อาหารชิ้นนี้ พนักงานคนไหนเป็นคนขาย
               </CardTitle>
               <CardDescription>
-                การ์ด「ยอดขายรวม」นับเป็นจำนวนชิ้นสินค้าที่ขาย — เลือก「รวมบิล」= หนึ่งแถวต่อหนึ่งบิล คอลัมน์「พนักงานขาย」บอกว่าบิลนั้นใครขาย — ถ้าต้องการดูทุกบิลในช่วงนี้ ให้เลือกพนักงาน「ทั้งหมด」
+                「จำนวนบิล」นับจากบิลจริงเท่านั้น — เลือก「รวมบิล」= หนึ่งแถวต่อหนึ่งบิล คอลัมน์「จำนวนรายการ」= จำนวนรายการในบิล (items.length) — ยอดรวมจาก orders เท่านั้น
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
@@ -530,6 +631,34 @@ export default function Reports() {
                     </SelectContent>
                   </Select>
                 </div>
+                <div className="space-y-2">
+                  <Label>วิธีชำระเงิน</Label>
+                  <Select value={auditPaymentMethod} onValueChange={setAuditPaymentMethod}>
+                    <SelectTrigger className="w-[180px]">
+                      <SelectValue placeholder="ทั้งหมด" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">ทั้งหมด</SelectItem>
+                      <SelectItem value="cash">เงินสด</SelectItem>
+                      <SelectItem value="transfer">โอนเงิน</SelectItem>
+                      <SelectItem value="card">บัตร</SelectItem>
+                      <SelectItem value="ewallet">อีวอลเล็ต</SelectItem>
+                      <SelectItem value="mixed">ผสม</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-2">
+                  <Label>ค้นหาเลขที่บิล</Label>
+                  <div className="relative">
+                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                    <Input
+                      placeholder="เลขที่บิล..."
+                      value={auditSearchTransactionNo}
+                      onChange={(e) => setAuditSearchTransactionNo(e.target.value)}
+                      className="pl-9 w-[200px]"
+                    />
+                  </div>
+                </div>
               </div>
 
               {auditCashierId !== "all" && salesData && salesAuditData?.rows?.length !== undefined && (() => {
@@ -560,37 +689,32 @@ export default function Reports() {
                       <TableRow>
                         <TableHead>วันที่/เวลา</TableHead>
                         <TableHead>เลขที่บิล</TableHead>
-                        <TableHead className="text-right">จำนวนชิ้น</TableHead>
+                        <TableHead className="text-right">จำนวนรายการ</TableHead>
                         <TableHead className="text-right">ยอดรวม</TableHead>
                         <TableHead>พนักงานขาย</TableHead>
+                        <TableHead>วิธีชำระเงิน</TableHead>
+                        <TableHead className="w-[100px]">ดูรายละเอียด</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {(() => {
-                        const byTx = new Map<number, typeof salesAuditData.rows>();
-                        for (const r of salesAuditData!.rows) {
-                          const list = byTx.get(r.transactionId) ?? [];
-                          list.push(r);
-                          byTx.set(r.transactionId, list);
-                        }
-                        return Array.from(byTx.entries())
-                          .map(([txId, rows]) => {
-                            const first = rows[0];
-                            const total = rows.reduce((s, x) => s + parseFloat(x.subtotal), 0);
-                            const itemCount = rows.reduce((s, r) => s + (r.quantity || 0), 0);
-                            return { txId, transactionNumber: first.transactionNumber, createdAt: first.createdAt, cashierName: first.cashierName, itemCount, total };
-                          })
-                          .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
-                          .map((b) => (
-                            <TableRow key={b.txId}>
-                              <TableCell>{new Date(b.createdAt).toLocaleString("th-TH")}</TableCell>
-                              <TableCell>{b.transactionNumber}</TableCell>
-                              <TableCell className="text-right">{b.itemCount}</TableCell>
-                              <TableCell className="text-right">฿{b.total.toFixed(2)}</TableCell>
-                              <TableCell>{b.cashierName}</TableCell>
-                            </TableRow>
-                          ));
-                      })()}
+                      {salesAuditData!.rows.map((row: any) => {
+                        // ตารางบิล: 1 บิล = 1 แถว ข้อมูลจาก orders เท่านั้น lineCount = items.length
+                        return (
+                          <TableRow key={row.transactionId}>
+                            <TableCell>{new Date(row.createdAt).toLocaleString("th-TH")}</TableCell>
+                            <TableCell>{row.transactionNumber}</TableCell>
+                            <TableCell className="text-right">{row.lineCount ?? 0}</TableCell>
+                            <TableCell className="text-right">฿{parseFloat(row.total || "0").toFixed(2)}</TableCell>
+                            <TableCell>{row.cashierName}</TableCell>
+                            <TableCell>{paymentMethodLabel[row.paymentMethod] || row.paymentMethod || "-"}</TableCell>
+                            <TableCell>
+                              <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => setDetailTxId(row.transactionId)} title="ดูรายละเอียด">
+                                <Eye className="h-4 w-4" />
+                              </Button>
+                            </TableCell>
+                          </TableRow>
+                        );
+                      })}
                     </TableBody>
                   </Table>
                 </div>
@@ -628,13 +752,13 @@ export default function Reports() {
                         }
                         return Array.from(merged.values())
                           .sort((a, b) => new Date(b.row.createdAt).getTime() - new Date(a.row.createdAt).getTime())
-                          .map((m) => (
-                            <TableRow key={key(m.row)}>
+                          .map((m, idx) => (
+                            <TableRow key={`${key(m.row)}-${idx}`}>
                               <TableCell>{new Date(m.row.createdAt).toLocaleString("th-TH")}</TableCell>
                               <TableCell>{m.row.transactionNumber}</TableCell>
-                              <TableCell>{m.row.productName}</TableCell>
+                              <TableCell>{m.row.productName || `#${m.row.productId}`}</TableCell>
                               <TableCell className="text-right">{m.qty}</TableCell>
-                              <TableCell className="text-right">฿{parseFloat(m.row.unitPrice).toFixed(2)}</TableCell>
+                              <TableCell className="text-right">฿{parseFloat(m.row.unitPrice || "0").toFixed(2)}</TableCell>
                               <TableCell className="text-right">฿{m.sum.toFixed(2)}</TableCell>
                               <TableCell>{m.row.cashierName}</TableCell>
                             </TableRow>
@@ -648,6 +772,65 @@ export default function Reports() {
           </Card>
         </TabsContent>
       </Tabs>
-    </div>
+
+      {/* Dialog รายละเอียดบิล */}
+      <Dialog open={detailTxId != null} onOpenChange={(open) => !open && setDetailTxId(null)}>
+        <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>รายละเอียดบิล</DialogTitle>
+          </DialogHeader>
+          {txDetailLoading ? (
+            <div className="py-8 text-center text-muted-foreground">กำลังโหลด...</div>
+          ) : !txDetail ? (
+            <div className="py-8 text-center text-muted-foreground">ไม่พบบิลหรือไม่มีสิทธิ์ดูบิลนี้</div>
+          ) : (
+            <div className="space-y-4">
+              <div className="grid grid-cols-2 gap-2 text-sm">
+                <div><span className="text-muted-foreground">เลขที่บิล:</span> {txDetail.transaction.transactionNumber}</div>
+                <div><span className="text-muted-foreground">วันที่/เวลา:</span> {new Date(txDetail.transaction.createdAt).toLocaleString("th-TH")}</div>
+                <div><span className="text-muted-foreground">พนักงานขาย:</span> {txDetail.cashierName}</div>
+                <div><span className="text-muted-foreground">วิธีชำระเงิน:</span> {paymentMethodLabel[txDetail.transaction.paymentMethod] || txDetail.transaction.paymentMethod || "-"}</div>
+                <div><span className="text-muted-foreground">สถานะ:</span> {paymentStatusLabel[txDetail.transaction.paymentStatus] || txDetail.transaction.paymentStatus || "-"}</div>
+              </div>
+              <div className="rounded-md border overflow-x-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>ชื่อสินค้า</TableHead>
+                      <TableHead className="text-right">จำนวน</TableHead>
+                      <TableHead className="text-right">ราคา/หน่วย</TableHead>
+                      <TableHead className="text-right">รวม</TableHead>
+                      <TableHead>ท็อปปิ้ง</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {/* รายละเอียดบิล = order.items เท่านั้น ลูปเดียว ห้ามวนซ้อน ราคาจาก item.unitPrice/item.subtotal (บิล) */}
+                    {txDetail.items.map((item, i) => (
+                      <TableRow key={`${item.productId}-${i}`}>
+                        <TableCell>{item.productName}</TableCell>
+                        <TableCell className="text-right">{item.quantity}</TableCell>
+                        <TableCell className="text-right">฿{parseFloat(item.unitPrice || "0").toFixed(2)}</TableCell>
+                        <TableCell className="text-right">฿{parseFloat(item.subtotal || "0").toFixed(2)}</TableCell>
+                        <TableCell className="text-muted-foreground text-sm">
+                          {Array.isArray(item.toppings) && item.toppings.length > 0
+                            ? item.toppings.map((t: { name?: string; price?: number }) => `${t.name || ""}${t.price != null ? ` +฿${t.price}` : ""}`).filter(Boolean).join(", ") || "-"
+                            : "-"}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+              <div className="flex flex-col gap-1 text-sm border-t pt-4">
+                {txDetail.transaction.subtotal != null && <div className="flex justify-between"><span className="text-muted-foreground">ยอดรวมย่อย</span><span>฿{parseFloat(txDetail.transaction.subtotal).toFixed(2)}</span></div>}
+                {txDetail.transaction.tax != null && parseFloat(txDetail.transaction.tax) !== 0 && <div className="flex justify-between"><span className="text-muted-foreground">ภาษี</span><span>฿{parseFloat(txDetail.transaction.tax).toFixed(2)}</span></div>}
+                {txDetail.transaction.discount != null && parseFloat(txDetail.transaction.discount) !== 0 && <div className="flex justify-between"><span className="text-muted-foreground">ส่วนลด</span><span>- ฿{parseFloat(txDetail.transaction.discount).toFixed(2)}</span></div>}
+                <div className="flex justify-between font-bold text-base"><span>ยอดรวม</span><span>฿{parseFloat(txDetail.transaction.total || "0").toFixed(2)}</span></div>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+    </DashboardLayout>
   );
 }

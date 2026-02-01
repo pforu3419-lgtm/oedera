@@ -96,34 +96,72 @@ async function getCollection<T extends Record<string, unknown>>(name: string) {
 
 async function getNextSeq(name: string) {
   const counters = await getCollection<{ _id: string; seq: number }>("counters");
-  console.log(`[getNextSeq] Getting next sequence for: ${name}`);
   const result = await counters.findOneAndUpdate(
     { _id: name },
     { $inc: { seq: 1 } },
     { upsert: true, returnDocument: "after" }
   );
-  const nextSeq = result.value?.seq ?? 1;
-  console.log(`[getNextSeq] Next sequence for ${name}: ${nextSeq}`);
-  return nextSeq;
+  const doc = result && typeof result === "object" && "value" in result ? (result as { value?: { seq?: number } }).value : result;
+  return (doc as { seq?: number } | null)?.seq ?? 1;
 }
 
 // Get next sequence for a specific organization (for multi-tenant isolation)
 async function getNextSeqForOrg(name: string, organizationId: number) {
   const counters = await getCollection<{ _id: string; seq: number }>("counters");
   const counterKey = `${name}_org_${organizationId}`;
-  console.log(`[getNextSeqForOrg] Getting next sequence for: ${counterKey}`);
   const result = await counters.findOneAndUpdate(
     { _id: counterKey },
     { $inc: { seq: 1 } },
     { upsert: true, returnDocument: "after" }
   );
-  const nextSeq = result.value?.seq ?? 1;
-  console.log(`[getNextSeqForOrg] Next sequence for ${counterKey}: ${nextSeq}`);
-  return nextSeq;
+  const doc = result && typeof result === "object" && "value" in result ? (result as { value?: { seq?: number } }).value : result;
+  return (doc as { seq?: number } | null)?.seq ?? 1;
 }
 
 // Export getNextSeq for use in routers
 export { getNextSeq, getNextSeqForOrg };
+
+/** คำนวณ check digit EAN-13 จากตัวเลข 12 หลัก */
+function ean13CheckDigit(digits12: string): number {
+  if (digits12.length !== 12) return 0;
+  let sum = 0;
+  for (let i = 0; i < 12; i++) {
+    const w = (11 - i) % 2 === 0 ? 3 : 1;
+    sum += parseInt(digits12[i], 10) * w;
+  }
+  return (10 - (sum % 10)) % 10;
+}
+
+/** สร้างบาร์โค้ด EAN-13: 885 + productId (pad ซ้าย 9 หลัก) + check digit — ใช้ productId จาก DB เท่านั้น */
+export function generateEAN13(productId: number): string {
+  const base = "885" + String(Math.max(0, productId)).padStart(9, "0").slice(-9);
+  const check = ean13CheckDigit(base);
+  return base + String(check);
+}
+
+let barcodeUniqueIndexEnsured = false;
+
+/** บังคับ barcode unique ระดับร้าน/org — ตั้ง unique index (ห้ามข้าม) */
+export async function ensureBarcodeUniqueIndex(): Promise<void> {
+  if (barcodeUniqueIndexEnsured) return;
+  barcodeUniqueIndexEnsured = true;
+  try {
+    const products = await getCollection<any>("products");
+    // ใช้เฉพาะ $exists + $gt (MongoDB บางเวอร์ชันไม่รองรับ $type ใน partial index)
+    await products.createIndex(
+      { organizationId: 1, barcode: 1 },
+      {
+        unique: true,
+        partialFilterExpression: {
+          barcode: { $exists: true, $gt: "" },
+        },
+      }
+    );
+  } catch (err) {
+    console.warn("[ensureBarcodeUniqueIndex] Index creation failed, enforcing in application:", err);
+    // ไม่ throw — ยังบังคับซ้ำในโค้ด (getProductByBarcode ก่อน save/update)
+  }
+}
 
 // ============ USERS ============
 // Helper: Get organizationId for a user
@@ -489,6 +527,11 @@ export async function getCategoryById(id: number, organizationId?: number | null
   return categories.findOne(query);
 }
 
+/**
+ * สร้างหมวดหมู่ใหม่
+ * ทุกครั้งที่สร้าง → ระบบสร้าง ID อัตโนมัติทันที (getNextSeq) ห้ามใช้ ID เดิม/กรอก ID เอง
+ * ถ้าตรวจพบ ID ซ้ำใน org เดียวกันจะไม่บันทึกและแจ้งเตือน
+ */
 export async function createCategory(data: {
   name: string;
   description?: string;
@@ -496,9 +539,27 @@ export async function createCategory(data: {
   organizationId: number;
 }) {
   const categories = await getCollection<any>("categories");
+  const counters = await getCollection<{ _id: string; seq: number }>("counters");
   const now = new Date();
+  // สร้าง ID อัตโนมัติทันทีทุกครั้งที่สร้างหมวดหมู่
+  let id = await getNextSeq("categories");
+  let existing = await categories.findOne({
+    organizationId: data.organizationId,
+    id,
+  });
+  // ถ้า ID ซ้ำ (counter ต่ำกว่า id สูงสุดใน DB) ใช้ max(id)+1 แล้วอัปเดต counter
+  if (existing) {
+    const maxDoc = await categories.find({}).sort({ id: -1 }).limit(1).toArray();
+    const maxId = (maxDoc[0] as { id: number } | undefined)?.id ?? 0;
+    id = maxId + 1;
+    await counters.updateOne(
+      { _id: "categories" },
+      { $max: { seq: id } },
+      { upsert: true }
+    );
+  }
   const doc = {
-    id: await getNextSeq("categories"),
+    id,
     name: data.name,
     description: data.description ?? null,
     displayOrder: data.displayOrder ?? 0,
@@ -511,6 +572,9 @@ export async function createCategory(data: {
   return doc;
 }
 
+/**
+ * อัปเดตหมวดหมู่ — ห้ามแก้ไข ID หมวดหมู่ (ระบบเป็นผู้กำหนด ID ให้เองเสมอ)
+ */
 export async function updateCategory(
   id: number,
   data: Partial<{
@@ -526,7 +590,10 @@ export async function updateCategory(
   if (organizationId !== undefined && organizationId !== null) {
     query.organizationId = organizationId;
   }
-  await categories.updateOne(query, { $set: { ...data, updatedAt: new Date() } });
+  const { id: _noId, ...safeData } = data as Record<string, unknown>;
+  await categories.updateOne(query, {
+    $set: { ...safeData, updatedAt: new Date() },
+  });
 }
 
 export async function deleteCategory(id: number, organizationId?: number | null) {
@@ -627,6 +694,77 @@ export async function getProductBySku(sku: string, organizationId?: number | nul
   return products.findOne(query);
 }
 
+/** Lookup product by barcode (optional field) */
+export async function getProductByBarcode(barcode: string, organizationId?: number | null) {
+  const products = await getCollection<any>("products");
+  const query: any = { barcode };
+  if (organizationId !== undefined && organizationId !== null) {
+    query.organizationId = organizationId;
+  }
+  return products.findOne(query);
+}
+
+/**
+ * Lookup for POS scan: รองรับ (1) รหัสสินค้า/บาร์โค้ด (2) QR จากเครื่องชั่ง productCode|weight|totalPrice
+ * Returns: { type: 'product', product } | { type: 'scale', product, totalPrice } | null
+ */
+export async function lookupProductByScan(
+  code: string,
+  organizationId?: number | null
+): Promise<
+  | { type: "product"; product: any }
+  | { type: "scale"; product: any; totalPrice: number }
+  | null
+> {
+  const trimmed = (code || "").trim();
+  if (!trimmed) return null;
+
+  const products = await getCollection<any>("products");
+  const orgQuery = organizationId != null ? { organizationId } : {};
+
+  // 2️⃣ รูปแบบ QR เครื่องชั่ง: productCode|weight|totalPrice (ห้ามคำนวณราคาใหม่ ใช้ราคาที่มากับ QR)
+  const scaleParts = trimmed.split("|").map((s) => s.trim());
+  if (scaleParts.length === 3) {
+    const [productCode, _weight, totalPriceStr] = scaleParts;
+    const totalPrice = parseFloat(totalPriceStr);
+    if (!productCode || Number.isNaN(totalPrice)) return null;
+    let product = await products.findOne({
+      ...orgQuery,
+      status: "active",
+      $or: [{ sku: productCode }, { barcode: productCode }],
+    });
+    if (!product) return null;
+    return { type: "scale", product, totalPrice };
+  }
+
+  // 1️⃣ บาร์โค้ดแบบเซเว่น (EAN-13 ฯลฯ) — ค้นหาจาก barcode ก่อน
+  const byBarcode = await products.findOne({ ...orgQuery, barcode: trimmed, status: "active" });
+  if (byBarcode) return { type: "product", product: byBarcode };
+
+  // 2️⃣ รหัสสินค้า (id ตัวเลข) / SKU
+  const byId = /^\d+$/.test(trimmed)
+    ? await products.findOne({ ...orgQuery, id: parseInt(trimmed, 10), status: "active" })
+    : null;
+  if (byId) return { type: "product", product: byId };
+
+  const bySku = await products.findOne({ ...orgQuery, sku: trimmed, status: "active" });
+  if (bySku) return { type: "product", product: bySku };
+
+  return null;
+}
+
+/**
+ * Flow การสร้างสินค้า (ต้องเป็นแบบนี้เท่านั้น)
+ * STEP 1: บันทึกสินค้า (barcode = null ถ้าไม่กรอกเอง)
+ * STEP 2: Database สร้าง productId จริง (getNextSeq)
+ * STEP 3: ใช้ productId นี้สร้าง barcode (generateEAN13) — หลัง STEP 2 เท่านั้น
+ * STEP 4: UPDATE product.barcode
+ *
+ * เช็กให้ชัวร์:
+ * - barcode ถูกสร้างหลัง save ใช่ไหม → ใช่ (STEP 3 หลัง insert)
+ * - productId มาจาก DB จริงใช่ไหม → ใช่ (getNextSeq)
+ * - barcode unique ใน DB ใช่ไหม → ใช่ (unique index + ตรวจก่อน update)
+ */
 export async function createProduct(data: {
   sku: string;
   name: string;
@@ -635,51 +773,245 @@ export async function createProduct(data: {
   price: string;
   cost?: string;
   imageUrl?: string | null;
+  barcode?: string | null;
   organizationId: number;
 }) {
   try {
-    console.log("[db.createProduct] Input data:", data);
+    await ensureBarcodeUniqueIndex();
     const products = await getCollection<any>("products");
     const now = new Date();
     const productId = await getNextSeq("products");
-    console.log("[db.createProduct] Generated product ID:", productId);
+    const userProvidedBarcode =
+      data.barcode != null && String(data.barcode).trim()
+        ? String(data.barcode).trim()
+        : null;
+
+    // STEP 1+2: บันทึกสินค้าก่อน (barcode = null ถ้าไม่กรอกเอง)
     const doc = {
       id: productId,
-    sku: data.sku,
-    name: data.name,
+      sku: data.sku,
+      name: data.name,
       description: data.description ?? null,
-    categoryId: data.categoryId,
-    price: data.price,
+      categoryId: data.categoryId,
+      price: data.price,
       cost: data.cost ?? null,
       imageUrl: data.imageUrl ?? null,
-    status: "active",
+      barcode: userProvidedBarcode,
+      barcodeType: userProvidedBarcode ? "EAN13" : null,
+      status: "active",
       organizationId: data.organizationId,
       createdAt: now,
       updatedAt: now,
     };
-    console.log("[db.createProduct] Document to insert:", doc);
-    const result = await products.insertOne(doc);
-    console.log("[db.createProduct] Insert result:", result.insertedId);
-    
-    // สร้าง inventory entry อัตโนมัติ
+    await products.insertOne(doc);
+
+    // สร้าง inventory entry อัตโนมัติ (แยกต่อร้านด้วย organizationId)
     const inventory = await getCollection<any>("inventory");
-    const existingInventory = await inventory.findOne({ productId });
+    const orgId = data.organizationId;
+    const existingInventory = await inventory.findOne({ productId, organizationId: orgId });
     if (!existingInventory) {
       await inventory.insertOne({
         productId,
+        organizationId: orgId,
         quantity: 0,
         minThreshold: 10,
         createdAt: now,
         updatedAt: now,
       });
-      console.log("[db.createProduct] Inventory entry created");
     }
-    
+
+    // STEP 3+4: ถ้าไม่กรอกบาร์โค้ดเอง → generate หลัง save แล้ว update
+    if (!userProvidedBarcode) {
+      const generatedBarcode = generateEAN13(productId);
+      const existing = await getProductByBarcode(
+        generatedBarcode,
+        data.organizationId
+      );
+      if (existing && existing.id !== productId) {
+        // ซ้ำ (ไม่ควรเกิด): generate ใหม่ด้วย suffix หรือ throw
+        throw new Error(
+          `บาร์โค้ดที่สร้างซ้ำ (productId=${productId}) กรุณาลองใหม่`
+        );
+      }
+      await products.updateOne(
+        { id: productId, organizationId: data.organizationId },
+        { $set: { barcode: generatedBarcode, barcodeType: "EAN13", updatedAt: new Date() } }
+      );
+      (doc as any).barcode = generatedBarcode;
+      (doc as any).barcodeType = "EAN13";
+    }
+
     return doc;
   } catch (error) {
     console.error("[db.createProduct] Error:", error);
     throw error;
   }
+}
+
+/**
+ * แก้สินค้าเก่าที่บาร์โค้ดซ้ำ: ล้าง barcode ที่ซ้ำ → generate ใหม่ทีละสินค้า (จาก productId)
+ * ห้ามใช้บาร์โค้ดเดิมต่อ
+ */
+export async function fixDuplicateBarcodes(): Promise<{ cleared: number; regenerated: number }> {
+  const products = await getCollection<any>("products");
+  const pipeline = [
+    { $match: { barcode: { $exists: true, $nin: [null, ""] } } },
+    { $group: { _id: { barcode: "$barcode", organizationId: "$organizationId" }, count: { $sum: 1 }, ids: { $push: "$id" } } },
+    { $match: { count: { $gt: 1 } } },
+  ];
+  const duplicates = await products.aggregate(pipeline).toArray();
+  let cleared = 0;
+  const productIdsToRegen: { id: number; organizationId: number }[] = [];
+  for (const d of duplicates) {
+    const { barcode, organizationId } = d._id;
+    const ids = d.ids as number[];
+    await products.updateMany(
+      { barcode, organizationId },
+      { $set: { barcode: null, barcodeType: null, updatedAt: new Date() } }
+    );
+    cleared += ids.length;
+    for (const id of ids) {
+      productIdsToRegen.push({ id, organizationId });
+    }
+  }
+  productIdsToRegen.sort((a, b) => a.id - b.id);
+  let regenerated = 0;
+  for (const { id, organizationId } of productIdsToRegen) {
+    const newBarcode = generateEAN13(id);
+    const existing = await getProductByBarcode(newBarcode, organizationId);
+    if (existing && existing.id !== id) continue; // ข้ามถ้าซ้ำ (ไม่ควรเกิด)
+    await products.updateOne(
+      { id, organizationId },
+      { $set: { barcode: newBarcode, barcodeType: "EAN13", updatedAt: new Date() } }
+    );
+    regenerated++;
+  }
+  return { cleared, regenerated };
+}
+
+/**
+ * สร้างบาร์โค้ดใหม่จาก productId เดิม (ปุ่มแก้ฉุกเฉิน, admin only)
+ * Overwrite ค่าเดิม, barcode ต้อง unique ต่อ org
+ */
+export async function regenerateProductBarcode(
+  productId: number,
+  organizationId: number
+): Promise<string> {
+  const products = await getCollection<any>("products");
+  const product = await products.findOne({
+    id: productId,
+    organizationId,
+  });
+  if (!product) {
+    throw new Error("ไม่พบสินค้า");
+  }
+  const newBarcode = generateEAN13(productId);
+  const existing = await getProductByBarcode(newBarcode, organizationId);
+  if (existing && existing.id !== productId) {
+    throw new Error("บาร์โค้ดที่สร้างซ้ำ กรุณาลองใหม่");
+  }
+  await products.updateOne(
+    { id: productId, organizationId },
+    { $set: { barcode: newBarcode, barcodeType: "EAN13", updatedAt: new Date() } }
+  );
+  return newBarcode;
+}
+
+/**
+ * หา product ที่ id ซ้ำในร้านเดียวกัน (ถ้ามี = สต็อกจะแสดงเท่ากันทั้งสองตัว)
+ */
+export async function findDuplicateProductIds(organizationId: number): Promise<{ id: number; count: number; skus: string[] }[]> {
+  const products = await getCollection<any>("products");
+  const docs = await products.find({ organizationId }).toArray();
+  const byId = new Map<number, any[]>();
+  for (const d of docs) {
+    const id = d.id;
+    if (!byId.has(id)) byId.set(id, []);
+    byId.get(id)!.push(d);
+  }
+  const result: { id: number; count: number; skus: string[] }[] = [];
+  for (const [id, list] of Array.from(byId.entries())) {
+    if (list.length > 1) {
+      result.push({
+        id,
+        count: list.length,
+        skus: list.map((p: any) => p.sku ?? ""),
+      });
+    }
+  }
+  return result;
+}
+
+/**
+ * แก้ product id ซ้ำ: ให้สินค้าที่ซ้ำได้ id ใหม่และแถว inventory แยก (กันสต็อกลดทั้งสองตัว)
+ */
+export async function fixDuplicateProductIds(
+  organizationId: number | null
+): Promise<{ updated: number }> {
+  const products = await getCollection<any>("products");
+  const inventory = await getCollection<any>("inventory");
+  const orgFilter: any =
+    organizationId != null
+      ? { organizationId }
+      : { $or: [{ organizationId: null }, { organizationId: { $exists: false } }] };
+  const docs = await products.find(orgFilter).toArray();
+  const byId = new Map<number, any[]>();
+  for (const d of docs) {
+    const id = d.id;
+    if (!byId.has(id)) byId.set(id, []);
+    byId.get(id)!.push(d);
+  }
+  let updated = 0;
+  for (const [, list] of Array.from(byId.entries())) {
+    if (list.length <= 1) continue;
+    list.sort((a: any, b: any) => (a.createdAt ? new Date(a.createdAt).getTime() : 0) - (b.createdAt ? new Date(b.createdAt).getTime() : 0));
+    for (let i = 1; i < list.length; i++) {
+      const doc = list[i];
+      const newId = await getNextSeq("products");
+      await products.updateOne(
+        { _id: doc._id },
+        { $set: { id: newId, updatedAt: new Date() } }
+      );
+      const existingInv = await inventory.findOne(
+        organizationId != null
+          ? { productId: doc.id, organizationId }
+          : { productId: doc.id, $or: [{ organizationId: null }, { organizationId: { $exists: false } }] }
+      );
+      await inventory.insertOne({
+        productId: newId,
+        organizationId: organizationId ?? null,
+        quantity: 0,
+        minThreshold: existingInv?.minThreshold ?? 10,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+      updated++;
+    }
+  }
+  return { updated };
+}
+
+/** แก้ product id ซ้ำทั้งหมด (ทุก organization) */
+export async function fixAllDuplicateProductIds(): Promise<{ totalUpdated: number; byOrg: Record<string, number> }> {
+  const products = await getCollection<any>("products");
+  const orgIds = await products.distinct("organizationId");
+  let totalUpdated = 0;
+  const byOrg: Record<string, number> = {};
+  for (const oid of orgIds) {
+    const { updated } = await fixDuplicateProductIds(oid);
+    if (updated > 0) {
+      byOrg[oid == null ? "null" : String(oid)] = updated;
+      totalUpdated += updated;
+    }
+  }
+  if (!orgIds.some((x) => x == null)) {
+    const { updated } = await fixDuplicateProductIds(null);
+    if (updated > 0) {
+      byOrg["null"] = updated;
+      totalUpdated += updated;
+    }
+  }
+  return { totalUpdated, byOrg };
 }
 
 export async function updateProduct(
@@ -692,6 +1024,8 @@ export async function updateProduct(
     price: string;
     cost: string;
     imageUrl: string | null | undefined;
+    barcode: string | null | undefined;
+    barcodeType: string | null | undefined;
     status: "active" | "inactive";
   }>,
   organizationId?: number | null
@@ -738,85 +1072,163 @@ export async function deleteProduct(id: number, organizationId?: number | null) 
 }
 
 // ============ INVENTORY ============
+// 1 สินค้า = 1 รหัส (productId) = 1 แถวสต็อกต่อร้าน (organizationId) → เพิ่ม/ลดเฉพาะตัวนั้น
 export async function getInventoryList(search?: string, organizationId?: number | null) {
   const inventory = await getCollection<any>("inventory");
   const products = await getCollection<any>("products");
-  const productQuery: any = {
-    status: "active", // Filter only active products
-  };
-  if (organizationId !== undefined && organizationId !== null) {
-    productQuery.organizationId = organizationId;
+  const productQuery: any = { status: "active" };
+  if (organizationId != null) {
+    productQuery.$or = [
+      { organizationId },
+      { organizationId: null },
+      { organizationId: { $exists: false } },
+    ];
   }
-  const inv = await inventory.find({}).toArray();
-  const productIds = inv.map(item => item.productId);
-  const productDocs = await products
-    .find({ id: { $in: productIds }, ...productQuery })
-    .toArray();
-  const productMap = new Map(productDocs.map(p => [p.id, p]));
-  const joined = inv
-    .map(item => {
-      const product = productMap.get(item.productId);
-      if (!product) return null; // Skip if product is inactive or not found
-      return {
-        productId: item.productId.toString(),
-        quantity: item.quantity,
-        minThreshold: item.minThreshold ?? 10,
-        sku: product.sku,
-        productName: product.name,
-        price: product.price,
-      };
-    })
-    .filter(Boolean) as any[];
-
+  const productDocs = await products.find(productQuery).toArray();
+  const invByProduct = new Map<number, { quantity: number; minThreshold: number }>();
+  const invQuery: any =
+    organizationId != null
+      ? { $or: [{ organizationId }, { organizationId: null }, { organizationId: { $exists: false } }] }
+      : { $or: [{ organizationId: null }, { organizationId: { $exists: false } }] };
+  const invList = await inventory.find(invQuery).toArray();
+  for (const item of invList) {
+    const itemOrg = item.organizationId;
+    if (organizationId != null) {
+      const itemOrgVal = itemOrg ?? null;
+      if (itemOrgVal !== null && itemOrgVal !== organizationId) continue;
+      if (itemOrgVal === organizationId) {
+        invByProduct.set(Number(item.productId), {
+          quantity: Number(item.quantity) || 0,
+          minThreshold: Number(item.minThreshold) || 10,
+        });
+        continue;
+      }
+      if (itemOrgVal === null && invByProduct.has(Number(item.productId))) continue;
+    } else {
+      if (itemOrg != null && itemOrg !== undefined) continue;
+    }
+    let pid = Number(item.productId);
+    if (Number.isNaN(pid)) pid = Number(String(item.productId).trim());
+    if (Number.isNaN(pid)) continue;
+    invByProduct.set(pid, {
+      quantity: Number(item.quantity) || 0,
+      minThreshold: Number(item.minThreshold) || 10,
+    });
+  }
+  const joined = productDocs.map((p) => {
+    const inv = invByProduct.get(p.id);
+    return {
+      productId: String(p.id),
+      quantity: inv?.quantity ?? 0,
+      minThreshold: inv?.minThreshold ?? 10,
+      sku: p.sku,
+      productName: p.name,
+      price: p.price,
+    };
+  });
   const filtered = search
     ? joined.filter(
-        item =>
-          item.productName.toLowerCase().includes(search.toLowerCase()) ||
-          item.sku.toLowerCase().includes(search.toLowerCase())
+        (i) =>
+          (i.productName || "").toLowerCase().includes(search.toLowerCase()) ||
+          (i.sku || "").toLowerCase().includes(search.toLowerCase())
       )
     : joined;
-  return filtered.sort((a, b) => a.productName.localeCompare(b.productName));
+  return filtered.sort((a, b) => (a.productName || "").localeCompare(b.productName || ""));
 }
 
 export async function getInventoryByProductId(productId: number, organizationId?: number | null) {
   const inventory = await getCollection<any>("inventory");
   const products = await getCollection<any>("products");
-  
-  // ตรวจสอบว่า product อยู่ใน organization เดียวกันหรือไม่
-  if (organizationId !== undefined && organizationId !== null) {
-    const product = await products.findOne({ id: productId, organizationId });
-    if (!product) {
-      return null; // Product ไม่อยู่ใน organization นี้
-    }
+  const pid = Number(productId);
+  if (organizationId != null) {
+    const product = await products.findOne({
+      id: pid,
+      $or: [{ organizationId }, { organizationId: null }, { organizationId: { $exists: false } }],
+    });
+    if (!product) return null;
   }
-  
-  return inventory.findOne({ productId });
+
+  const filters: any[] =
+    organizationId != null
+      ? [
+          { productId: pid, organizationId },
+          { productId: String(productId), organizationId },
+          { productId: pid },
+          { productId: String(productId) },
+        ]
+      : [
+          { productId: pid },
+          { productId: String(productId) },
+        ];
+
+  for (const filter of filters) {
+    const row = await inventory.findOne(filter);
+    if (row) return row;
+  }
+  return null;
 }
 
+/** อัปเดตสต็อกเฉพาะ productId นี้ของร้านนี้เท่านั้น */
 export async function updateInventory(productId: number, quantity: number, organizationId?: number | null) {
   const inventory = await getCollection<any>("inventory");
   const products = await getCollection<any>("products");
-  
-  // ตรวจสอบว่า product อยู่ใน organization เดียวกันหรือไม่
-  if (organizationId !== undefined && organizationId !== null) {
-    const product = await products.findOne({ id: productId, organizationId });
-    if (!product) {
-      throw new Error("Product not found in your organization");
+  const pid = Number(productId);
+  const qty = Number(quantity);
+  const orgId = organizationId ?? null;
+
+  const productExists = await products.findOne({
+    id: pid,
+    $or: orgId != null
+      ? [{ organizationId: orgId }, { organizationId: null }, { organizationId: { $exists: false } }]
+      : [{ organizationId: null }, { organizationId: { $exists: false } }],
+  });
+  if (!productExists) {
+    const anyProduct = await products.findOne({ id: pid });
+    if (anyProduct) {
+      throw new Error(`สินค้านี้อยู่ในร้านอื่น ไม่สามารถเพิ่มสต็อกได้`);
     }
+    throw new Error("ไม่พบสินค้านี้ในระบบ");
   }
-  
-  const existing = await inventory.findOne({ productId });
+
+  const effectiveOrgId = productExists.organizationId ?? orgId;
+  const allRows = await inventory
+    .find({
+      $or: [{ productId: pid }, { productId: String(productId) }, { productId: String(pid) }],
+    })
+    .toArray();
+
+  let existing: any = null;
+  if (allRows.length === 1) {
+    existing = allRows[0];
+  } else if (allRows.length > 1) {
+    const preferred = allRows.find((r) => (r.organizationId ?? null) === (orgId ?? null));
+    const fallback = allRows.find((r) => (r.organizationId ?? null) === (effectiveOrgId ?? null));
+    existing = preferred ?? fallback ?? allRows[0];
+  }
+
   if (existing) {
-    await inventory.updateOne(
-      { productId },
-      { $set: { quantity, updatedAt: new Date() } }
+    const result = await inventory.updateOne(
+      { _id: existing._id },
+      {
+        $set: {
+          productId: pid,
+          quantity: qty,
+          organizationId: effectiveOrgId ?? existing.organizationId ?? null,
+          updatedAt: new Date(),
+        },
+      }
     );
+    if (result.matchedCount === 0) {
+      throw new Error("Failed to update inventory");
+    }
     return;
   }
+
   await inventory.insertOne({
-    productId,
-    quantity,
+    productId: pid,
+    quantity: qty,
     minThreshold: 10,
+    organizationId: effectiveOrgId ?? orgId,
     updatedAt: new Date(),
   });
 }
@@ -1032,6 +1444,7 @@ export async function getCustomerPurchaseHistory(customerId: number, organizatio
 export async function createTransaction(data: {
   transactionNumber: string;
   cashierId: number;
+  cashierName: string; // ฝังชื่อพนักงานตอนบันทึก (ไม่ต้อง JOIN ทีหลัง)
   customerId?: number;
   subtotal: string;
   tax: string;
@@ -1048,6 +1461,7 @@ export async function createTransaction(data: {
     id,
     transactionNumber: data.transactionNumber,
     cashierId: data.cashierId.toString(),
+    cashierName: data.cashierName, // เก็บชื่อพนักงานตอนบันทึก
     customerId: data.customerId ?? null,
     subtotal: data.subtotal,
     tax: data.tax,
@@ -1085,32 +1499,151 @@ export async function getTransactionsByDateRange(startDate: Date, endDate: Date,
     .toArray();
 }
 
+/** เก็บ productName ตอนสร้างบิล — รายละเอียดบิลใช้ order.items เท่านั้น ห้าม join products */
 export async function createTransactionItem(data: {
   transactionId: number;
   productId: number;
+  productName?: string; // ชื่อสินค้าตอนขาย (snapshot) ใช้แสดงรายละเอียดบิลโดยไม่ join products
   quantity: number;
   unitPrice: string;
   discount: string;
   subtotal: string;
-  toppings?: Array<{ id: number; name: string; price: number }>; // ท็อปปิ้งที่เลือก
+  toppings?: Array<{ id: number; name: string; price: number }>;
 }) {
   const items = await getCollection<any>("transactionItems");
   await items.insertOne({
     id: await getNextSeq("transactionItems"),
     transactionId: data.transactionId,
     productId: data.productId,
+    productName: data.productName ?? null, // ราคา/ชื่อจากบิลเท่านั้น
     quantity: data.quantity,
     unitPrice: data.unitPrice,
     discount: data.discount,
     subtotal: data.subtotal,
-    toppings: data.toppings || [], // เก็บท็อปปิ้งที่เลือก
+    toppings: data.toppings || [],
     createdAt: new Date(),
   });
 }
 
+/** ดึงรายการในบิล — รวมรายการซ้ำ (productId+unitPrice+toppings เดียวกัน) เป็น 1 แถว เพื่อบิลเก่าที่มี 58 แถวแสดงเป็น 1 รายการ */
 export async function getTransactionItems(transactionId: number) {
   const items = await getCollection<any>("transactionItems");
-  return items.find({ transactionId }).toArray();
+  const rows = await items.find({ transactionId }).toArray();
+  const key = (r: any) =>
+    `${r.productId}|${r.unitPrice ?? ""}|${JSON.stringify((r.toppings || []).slice().sort((a: any, b: any) => (a?.id ?? 0) - (b?.id ?? 0)))}`;
+  const byKey = new Map<string, any>();
+  for (const r of rows) {
+    const k = key(r);
+    const qty = Number(r.quantity) || 0;
+    const sub = parseFloat(String(r.subtotal || "0")) || 0;
+    const cur = byKey.get(k);
+    if (cur) {
+      cur.quantity += qty;
+      cur.subtotal += sub;
+    } else {
+      byKey.set(k, {
+        ...r,
+        quantity: qty,
+        subtotal: sub,
+      });
+    }
+  }
+  return Array.from(byKey.values()).map((r) => ({
+    ...r,
+    subtotal: typeof r.subtotal === "number" ? r.subtotal.toFixed(2) : String(r.subtotal ?? "0"),
+  }));
+}
+
+/** นับจำนวนรายการในบิล (รวมรายการซ้ำ productId+unitPrice = 1 รายการ) — บิลเก่า 58 แถวซ้ำจะนับเป็น 1 */
+export async function getTransactionLineCounts(transactionIds: number[]): Promise<Record<number, number>> {
+  if (transactionIds.length === 0) return {};
+  const items = await getCollection<any>("transactionItems");
+  const result = await items.aggregate([
+    { $match: { transactionId: { $in: transactionIds } } },
+    {
+      $group: {
+        _id: {
+          transactionId: "$transactionId",
+          productId: "$productId",
+          unitPrice: { $ifNull: ["$unitPrice", ""] },
+        },
+      },
+    },
+    { $group: { _id: "$_id.transactionId", lineCount: { $sum: 1 } } },
+  ]).toArray();
+  const counts: Record<number, number> = {};
+  for (const txId of transactionIds) counts[txId] = 0;
+  for (const r of result) counts[Number(r._id)] = Number(r.lineCount) || 0;
+  return counts;
+}
+
+/** นับจำนวนชิ้นสินค้า (quantity รวม) สำหรับแต่ละ transaction - ใช้ MongoDB aggregation (วิธีที่แน่ใจที่สุด) */
+export async function getTransactionItemCounts(transactionIds: number[]): Promise<Record<number, number>> {
+  if (transactionIds.length === 0) return {};
+  const items = await getCollection<any>("transactionItems");
+  
+  // ใช้ MongoDB aggregation เพื่อนับ quantity โดยตรงจากฐานข้อมูล
+  // วิธีนี้แน่ใจที่สุดเพราะ MongoDB จะนับให้โดยตรง ไม่ผ่าน JavaScript
+  const aggregationResult = await items.aggregate([
+    { $match: { transactionId: { $in: transactionIds } } },
+    {
+      $addFields: {
+        // แปลง quantity เป็น number (รองรับทั้ง string และ number)
+        qtyNum: {
+          $cond: [
+            { $eq: [{ $type: "$quantity" }, "number"] },
+            { $ifNull: ["$quantity", 0] },
+            { $toDouble: { $ifNull: ["$quantity", "0"] } }
+          ]
+        }
+      }
+    },
+    {
+      $group: {
+        _id: "$transactionId",
+        totalQuantity: { $sum: "$qtyNum" },
+        itemRows: { $sum: 1 } // นับจำนวนแถวด้วย (สำหรับ debug)
+      }
+    }
+  ]).toArray();
+  
+  // Debug: log ผลลัพธ์ aggregation (sample)
+  if (aggregationResult.length > 0) {
+    const sample = aggregationResult.slice(0, 3);
+    console.log(`[getTransactionItemCounts] Aggregation result (first 3):`, 
+      sample.map(r => ({ txId: r._id, totalQty: r.totalQuantity, itemRows: r.itemRows })));
+  }
+  
+  // แปลงผลลัพธ์เป็น map
+  const counts: Record<number, number> = {};
+  
+  // Initialize: ทุก transaction เริ่มต้นที่ 0
+  for (const txId of transactionIds) {
+    counts[txId] = 0;
+  }
+  
+  // ใส่ค่าจาก aggregation result
+  for (const result of aggregationResult) {
+    const txId = Number(result._id);
+    const qty = Number(result.totalQuantity) || 0;
+    counts[txId] = qty;
+    
+    // Debug: log สำหรับ transaction ที่มี quantity ผิดปกติ
+    if (qty > 50) {
+      console.warn(`[getTransactionItemCounts] Transaction ${txId} has unusual quantity: ${qty} (${result.itemRows} item rows)`);
+      // Query items ของ transaction นี้เพื่อดูรายละเอียด
+      const txItems = await items.find({ transactionId: txId }).limit(10).toArray();
+      console.warn(`[getTransactionItemCounts] Transaction ${txId} items (first 10):`, 
+        txItems.map(i => ({ 
+          productId: i.productId, 
+          quantity: i.quantity, 
+          qtyType: typeof i.quantity,
+          subtotal: i.subtotal
+        })));
+    }
+  }
+  
+  return counts;
 }
 
 export async function getTransactionItemsByTransactionIds(transactionIds: number[]) {
@@ -1123,7 +1656,8 @@ export async function getTopSellingProducts(
   startDate: Date,
   endDate: Date,
   limit: number = 10,
-  organizationId?: number | null
+  organizationId?: number | null,
+  cashierId?: number | null
 ) {
   const items = await getCollection<any>("transactionItems");
   const transactions = await getCollection<any>("transactions");
@@ -1131,7 +1665,10 @@ export async function getTopSellingProducts(
   if (organizationId !== undefined && organizationId !== null) {
     txQuery.organizationId = organizationId;
   }
-  const txs = await transactions.find(txQuery).toArray();
+  let txs = await transactions.find(txQuery).toArray();
+  if (cashierId != null) {
+    txs = txs.filter((t) => parseInt(String(t.cashierId), 10) === cashierId);
+  }
   const txIds = new Set(txs.map(t => t.id));
   const allItems = await items.find({ transactionId: { $in: [...txIds] } }).toArray();
   const sales: Record<string, { productId: string; quantity: number; revenue: number }> = {};
@@ -1569,6 +2106,7 @@ export async function getDashboardSummary(organizationId?: number | null) {
   };
   const todaySales = await transactions.find(todayTransactionQuery).toArray();
   const todaySalesTotal = todaySales.reduce((sum, t) => sum + parseFloat(t.total || "0"), 0);
+  const todayTransactions = todaySales.length;
 
   // Get yesterday's sales for comparison
   const yesterdayTransactionQuery = {
@@ -1600,6 +2138,17 @@ export async function getDashboardSummary(organizationId?: number | null) {
   // Get total customers count
   const totalCustomers = await customers.countDocuments(customerQuery);
 
+  // Low stock count (สินค้าใกล้หมด): inventory ที่ quantity <= 10 สำหรับ products ของ org นี้
+  const inventory = await getCollection<any>("inventory");
+  const orgProductIds = await products.find(productQuery).project({ id: 1 }).toArray();
+  const orgIds = orgProductIds.map((p: any) => p.id);
+  const lowStockCount = orgIds.length === 0
+    ? 0
+    : await inventory.countDocuments({
+        productId: { $in: orgIds },
+        quantity: { $lte: 10 },
+      });
+
   // Get recent activities
   const recentActivities = await activityLogs
     .find({})
@@ -1610,9 +2159,11 @@ export async function getDashboardSummary(organizationId?: number | null) {
   return {
     todaySalesTotal,
     todaySalesTrend: parseFloat(todaySalesTrend),
+    todayTransactions,
     monthSalesTotal,
     totalProducts,
     totalCustomers,
+    lowStockCount,
     recentActivities,
   };
 }
@@ -2348,14 +2899,14 @@ export async function getUsersByStore(storeId: number) {
 // ============ SYSTEM CONFIG (รหัสหลักสำหรับระบบสร้างรหัสแอดมิน) ============
 const MASTER_CODE_KEY = "masterCodeForAdminCodes";
 
-/** คืนรหัสหลักที่ใช้ verify (DB ก่อน ไม่มีถึงใช้ ENV) — ครั้งแรกใช้ ORDERA_MASTER_CODE จาก env */
+/** คืนรหัสหลักที่ใช้ verify — ถ้า ORDERA_MASTER_CODE ใน env ไม่ว่าง ใช้ env ก่อน ไม่งั้นใช้จาก DB */
 export async function getMasterCodeForAdminCodesForVerify(): Promise<string | null> {
+  const fromEnv = (ENV.masterCodeForAdminCodes || "").trim();
+  if (fromEnv !== "") return fromEnv;
   const col = await getCollection<{ _id: string; value: string }>("systemConfig");
   const row = await col.findOne({ _id: MASTER_CODE_KEY });
-  const fromDb = row?.value;
-  const fromEnv = ENV.masterCodeForAdminCodes;
-  const effective = fromDb != null && String(fromDb).trim() !== "" ? String(fromDb).trim() : (fromEnv || "").trim();
-  return effective || null;
+  const fromDb = row?.value != null && String(row.value).trim() !== "" ? String(row.value).trim() : "";
+  return fromDb || null;
 }
 
 /** ดูว่ามีการตั้งรหัสหลักใน DB หรือยัง (สำหรับหน้า Settings) */

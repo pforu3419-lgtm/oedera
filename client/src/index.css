@@ -131,7 +131,8 @@
     @apply border-border outline-ring/50;
   }
   body {
-    @apply bg-background text-foreground font-sans;
+    @apply bg-background text-foreground;
+    font-family: 'Sarabun', 'Leelawadee UI', 'Tahoma', system-ui, sans-serif;
     /* ลด delay ตอนแตะและป้องกัน double-zoom */
     touch-action: manipulation;
     -webkit-tap-highlight-color: transparent;

@@ -10,11 +10,13 @@ import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { trpc } from "@/lib/trpc";
-import { Plus, Edit, Trash2, AlertCircle, Users, Printer, Settings as SettingsIcon, Store, Key, Shield } from "lucide-react";
+import { Plus, Edit, Trash2, AlertCircle, Users, Printer, Settings as SettingsIcon, Store, Key, Shield, Building2, ArrowLeft } from "lucide-react";
 import { toast } from "sonner";
+import { useLocation } from "wouter";
 import DashboardLayout from "@/components/DashboardLayout";
 
 export default function SystemSettings() {
+  const [, setLocation] = useLocation();
   const [activeTab, setActiveTab] = useState("users");
 
   // Users state
@@ -277,13 +279,34 @@ export default function SystemSettings() {
   return (
     <DashboardLayout>
       <div className="space-y-6 p-6">
-        <div>
-          <h1 className="text-3xl font-bold">ตั้งค่าระบบ</h1>
-          <p className="text-muted-foreground">จัดการผู้ใช้งานและเทมเพลตใบเสร็จ</p>
+        <div className="flex items-center gap-4">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setLocation("/")}
+            className="shrink-0 gap-2"
+          >
+            <ArrowLeft className="h-4 w-4" />
+            ย้อนกลับ
+          </Button>
+          <div>
+            <h1 className="text-3xl font-bold">ตั้งค่าระบบ</h1>
+            <p className="text-muted-foreground">จัดการผู้ใช้งานและเทมเพลตใบเสร็จ</p>
+          </div>
         </div>
 
-        <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
-          <TabsList className="grid w-full grid-cols-4">
+        <Tabs
+          value={activeTab}
+          onValueChange={(value) => {
+            if (value === "tax") {
+              setLocation("/tax");
+              return;
+            }
+            setActiveTab(value);
+          }}
+          className="w-full"
+        >
+          <TabsList className="grid w-full grid-cols-5">
             <TabsTrigger value="users" className="flex items-center gap-2">
               <Users className="h-4 w-4" />
               ผู้ใช้งาน
@@ -299,6 +322,10 @@ export default function SystemSettings() {
             <TabsTrigger value="system" className="flex items-center gap-2">
               <Shield className="h-4 w-4" />
               ระบบ
+            </TabsTrigger>
+            <TabsTrigger value="tax" className="flex items-center gap-2">
+              <Building2 className="h-4 w-4" />
+              ระบบภาษี
             </TabsTrigger>
           </TabsList>
 

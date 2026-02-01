@@ -3,8 +3,7 @@ import * as XLSX from 'xlsx';
 export interface ReportData {
   startDate: Date;
   endDate: Date;
-  totalTransactions: number;
-  totalItems?: number; // จำนวนชิ้นสินค้าที่ขาย (รวม quantity ทุกรายการ)
+  totalTransactions: number; // จำนวนบิล = นับจาก orders เท่านั้น
   totalSales: number;
   totalTax: number;
   totalDiscount: number;
@@ -21,17 +20,16 @@ export interface ReportData {
 export function exportToExcel(reportData: ReportData) {
   const workbook = XLSX.utils.book_new();
 
-  const itemCount = reportData.totalItems ?? reportData.totalTransactions;
-  // สรุปรายงาน
+  // สรุปรายงาน — จำนวนบิล = นับจาก orders เท่านั้น
   const summaryData = [
     ['รายงานยอดขาย'],
     ['ช่วงเวลา', `${new Date(reportData.startDate).toLocaleDateString('th-TH')} - ${new Date(reportData.endDate).toLocaleDateString('th-TH')}`],
     [''],
+    ['จำนวนบิล', reportData.totalTransactions],
     ['ยอดขายรวม', reportData.totalSales.toFixed(2)],
     ['ภาษีมูลค่าเพิ่ม', reportData.totalTax.toFixed(2)],
     ['ส่วนลดรวม', reportData.totalDiscount.toFixed(2)],
-    ['จำนวนชิ้น', itemCount],
-    ['ค่าเฉลี่ยต่อชิ้น', (reportData.totalSales / (itemCount || 1)).toFixed(2)],
+    ['ค่าเฉลี่ยต่อบิล', (reportData.totalSales / (reportData.totalTransactions || 1)).toFixed(2)],
   ];
 
   const summarySheet = XLSX.utils.aoa_to_sheet(summaryData);
@@ -170,8 +168,8 @@ export function exportToPDF(reportData: ReportData) {
           <div class="value">฿${reportData.totalSales.toFixed(2)}</div>
         </div>
         <div class="summary-item">
-          <label>จำนวนชิ้น</label>
-          <div class="value">${reportData.totalItems ?? reportData.totalTransactions}</div>
+          <label>จำนวนบิล</label>
+          <div class="value">${reportData.totalTransactions}</div>
         </div>
         <div class="summary-item">
           <label>ภาษีมูลค่าเพิ่ม</label>

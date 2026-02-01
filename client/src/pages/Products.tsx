@@ -8,18 +8,26 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
+import { Label } from "@/components/ui/label";
 import { trpc } from "@/lib/trpc";
 import { useState } from "react";
-import { Loader2, Plus, Edit2, Trash2, Upload, X, ArrowLeft, AlertTriangle, History, Package, Warehouse, List } from "lucide-react";
+import { Loader2, Plus, Edit2, Trash2, Upload, X, ArrowLeft, AlertTriangle, History, Package, Warehouse, List, Layers, Printer, ChevronRight, Barcode, Minus } from "lucide-react";
+import { BarcodeDisplay } from "@/components/BarcodeDisplay";
+import { BarcodePrintSheet } from "@/components/BarcodePrintSheet";
+import { validateEAN13, normalizeEAN13Input } from "@/lib/barcode";
 import { toast } from "sonner";
 import { useLocation } from "wouter";
+import { useAuth } from "@/_core/hooks/useAuth";
 
 interface ProductForm {
   id?: number;
   sku: string;
+  barcode?: string;
   name: string;
   description?: string;
   categoryId: number;
@@ -38,6 +46,7 @@ interface StockAdjustment {
 
 export default function ProductsAndInventory() {
   const [, setLocation] = useLocation();
+  const { user } = useAuth();
   const [activeTab, setActiveTab] = useState("products");
   
   // Products state
@@ -53,8 +62,17 @@ export default function ProductsAndInventory() {
   const [imageFile, setImageFile] = useState<File | null>(null);
   const [imagePreview, setImagePreview] = useState<string>("");
   const [selectedCategoryIndex, setSelectedCategoryIndex] = useState(0);
+  const [showBarcodePrint, setShowBarcodePrint] = useState(false);
+  const [productForBarcodePrint, setProductForBarcodePrint] = useState<{
+    id: number;
+    name: string;
+    price: string;
+    barcode: string | null;
+  } | null>(null);
+  const [barcodeSource, setBarcodeSource] = useState<"auto" | "manual">("auto");
   const [formData, setFormData] = useState<ProductForm>({
     sku: "",
+    barcode: "",
     name: "",
     categoryId: 1,
     price: "",
@@ -114,17 +132,42 @@ export default function ProductsAndInventory() {
   });
   const deleteProductMutation = trpc.products.delete.useMutation({
     onSuccess: async () => {
-      console.log("[deleteProductMutation] onSuccess - invalidating queries");
-      // Invalidate all related queries
       await utils.products.list.invalidate();
       await utils.inventory.list.invalidate();
-      console.log("[deleteProductMutation] Queries invalidated");
     },
-    onError: async (error) => {
-      console.error("[deleteProductMutation] Error:", error);
-      // Refetch on error to restore state
+    onError: async () => {
       await productsQuery.refetch();
     },
+  });
+  const regenerateBarcodeMutation = trpc.products.regenerateBarcode.useMutation({
+    onSuccess: (newBarcode) => {
+      utils.products.list.invalidate();
+      setFormData((prev) => ({ ...prev, barcode: newBarcode }));
+      toast.success(`สร้างบาร์โค้ดใหม่: ${newBarcode}`);
+    },
+    onError: (err) => {
+      toast.error(err.message || "สร้างบาร์โค้ดใหม่ไม่สำเร็จ");
+    },
+  });
+  const fixDuplicateBarcodesMutation = trpc.products.fixDuplicateBarcodes.useMutation({
+    onSuccess: ({ cleared, regenerated }) => {
+      utils.products.list.invalidate();
+      if (cleared === 0) toast.success("ไม่พบบาร์โค้ดซ้ำ");
+      else toast.success(`แก้บาร์โค้ดซ้ำแล้ว: ล้าง ${cleared} รายการ, สร้างใหม่ ${regenerated} รายการ`);
+    },
+    onError: (err) => toast.error(err.message || "แก้บาร์โค้ดซ้ำไม่สำเร็จ"),
+  });
+  const duplicateProductIdsQuery = trpc.products.findDuplicateProductIds.useQuery(undefined, {
+    enabled: user?.role === "admin",
+  });
+  const fixDuplicateProductIdsMutation = trpc.products.fixDuplicateProductIds.useMutation({
+    onSuccess: ({ updated }) => {
+      utils.products.list.invalidate();
+      utils.inventory.list.invalidate();
+      duplicateProductIdsQuery.refetch();
+      toast.success(updated > 0 ? `แก้ product id ซ้ำแล้ว ${updated} รายการ — สต็อกจะไม่ลดทั้งสองตัวแล้ว` : "ไม่พบ product id ซ้ำ");
+    },
+    onError: (err) => toast.error(err.message || "แก้ product id ซ้ำไม่สำเร็จ"),
   });
   const createCategoryMutation = trpc.categories.create.useMutation({
     onSuccess: () => {
@@ -152,15 +195,14 @@ export default function ProductsAndInventory() {
     },
   });
   const adjustStockMutation = trpc.inventory.adjustStock.useMutation({
-    onSuccess: () => {
-      utils.inventory.list.invalidate();
+    onSuccess: async () => {
+      await utils.inventory.list.invalidate();
     },
   });
 
   const categories = categoriesQuery.data || [];
   // Products are now actually deleted from database, so no need to filter by status
   const products = productsQuery.data || [];
-  console.log("[Products] Total products from query:", products.length);
   const inventory = inventoryQuery.data || [];
   const lowStockItems = inventory.filter(
     (item: any) => parseInt(item.quantity) <= (item.minThreshold || 10)
@@ -181,29 +223,31 @@ export default function ProductsAndInventory() {
 
   const handleOpenDialog = (product?: any) => {
     if (product) {
-      console.log("[handleOpenDialog] Opening dialog for product:", product.id, product.name);
       setEditingProduct(product);
       const catIdx = categories.findIndex((c) => c.id === product.categoryId);
       setSelectedCategoryIndex(catIdx >= 0 ? catIdx : 0);
+      setBarcodeSource(product.barcode?.trim() ? "manual" : "auto");
       setFormData({
         id: product.id,
         sku: product.sku,
+        barcode: product.barcode ?? "",
         name: product.name,
         description: product.description,
         categoryId: product.categoryId,
         price: product.price,
         cost: product.cost,
-        imageUrl: product.imageUrl || undefined, // Store current imageUrl
+        imageUrl: product.imageUrl || undefined,
         status: product.status,
       });
       setImagePreview(product.imageUrl || "");
       setImageFile(null); // Clear any previous file selection
     } else {
-      console.log("[handleOpenDialog] Opening dialog for new product");
       setEditingProduct(null);
       setSelectedCategoryIndex(0);
+      setBarcodeSource("auto");
       setFormData({
         sku: "",
+        barcode: "",
         name: "",
         categoryId: categories[0]?.id ?? 1,
         price: "",
@@ -228,13 +272,24 @@ export default function ProductsAndInventory() {
       toast.error("กรุณากรอกข้อมูลให้ครบถ้วน");
       return;
     }
+    const nameTrim = (formData.name ?? "").trim();
+    if (/^\d+$/.test(nameTrim)) {
+      toast.error("ชื่อสินค้าต้องอ่านรู้เรื่อง ห้ามเป็นตัวเลขล้วน");
+      return;
+    }
+    if (barcodeSource === "manual" && (formData.barcode ?? "").trim()) {
+      const barcodeVal = validateEAN13(formData.barcode ?? "");
+      if (!barcodeVal.valid) {
+        toast.error(barcodeVal.error ?? "บาร์โค้ดนี้ไม่ตรงรูปแบบที่เลือก");
+        return;
+      }
+    }
 
     try {
       let imageUrl = formData.imageUrl;
 
       if (imageFile) {
         try {
-          console.log("[handleSaveProduct] Starting image upload...");
           const formDataForUpload = new FormData();
           formDataForUpload.append("file", imageFile);
           
@@ -243,36 +298,25 @@ export default function ProductsAndInventory() {
             body: formDataForUpload,
           });
 
-          console.log("[handleSaveProduct] Upload response status:", uploadResponse.status);
-
           if (!uploadResponse.ok) {
             const errorText = await uploadResponse.text();
-            console.error("[handleSaveProduct] Upload error:", errorText);
             toast.error(`อัปโหลดภาพล้มเหลว: ${errorText}`);
-            // Don't throw error - just skip image upload
-            console.warn("[handleSaveProduct] Skipping image upload due to error");
-            imageUrl = formData.imageUrl; // Keep existing imageUrl if upload fails
+            imageUrl = formData.imageUrl;
           } else {
             try {
               const uploadData = await uploadResponse.json();
-              console.log("[handleSaveProduct] Upload response data:", uploadData);
-              
               if (uploadData && uploadData.url) {
                 imageUrl = uploadData.url;
-                console.log("[handleSaveProduct] Image URL set to:", imageUrl);
               } else {
-                console.warn("[handleSaveProduct] No URL in upload response:", uploadData);
                 toast.error("ไม่ได้รับ URL ของภาพจากเซิร์ฟเวอร์");
                 imageUrl = formData.imageUrl; // Keep existing imageUrl
               }
             } catch (jsonError) {
-              console.error("[handleSaveProduct] JSON parse error:", jsonError);
               toast.error("ไม่สามารถอ่านข้อมูลจากเซิร์ฟเวอร์");
               imageUrl = formData.imageUrl; // Keep existing imageUrl
             }
           }
         } catch (uploadError) {
-          console.error("[handleSaveProduct] Upload exception:", uploadError);
           toast.error(`เกิดข้อผิดพลาดในการอัปโหลด: ${uploadError instanceof Error ? uploadError.message : "Unknown error"}`);
           // Don't throw error - just skip image upload
           imageUrl = formData.imageUrl; // Keep existing imageUrl
@@ -306,11 +350,8 @@ export default function ProductsAndInventory() {
         }
       }
 
-      console.log("[handleSaveProduct] Product data:", productData);
-      console.log("[handleSaveProduct] Editing product ID:", editingProduct?.id);
-      console.log("[handleSaveProduct] Image URL:", imageUrl);
-      console.log("[handleSaveProduct] FormData imageUrl:", formData.imageUrl);
-      console.log("[handleSaveProduct] Has imageFile:", !!imageFile);
+      // บาร์โค้ด: สร้างอัตโนมัติ = null, ใช้จากผู้ผลิต = ค่าที่ validate แล้ว
+      productData.barcode = barcodeSource === "auto" ? null : (formData.barcode?.trim() || null);
 
       if (editingProduct) {
         await updateProductMutation.mutateAsync({
@@ -319,15 +360,12 @@ export default function ProductsAndInventory() {
         });
         toast.success("อัปเดตสินค้าสำเร็จ");
       } else {
-        console.log("[handleSaveProduct] Creating product...");
-        const result = await createProductMutation.mutateAsync(productData);
-        console.log("[handleSaveProduct] Product created:", result);
+        await createProductMutation.mutateAsync(productData);
         toast.success("เพิ่มสินค้าสำเร็จ");
       }
       handleCloseDialog();
       // Queries will be automatically refetched via invalidate in onSuccess callbacks
     } catch (error: any) {
-      console.error("[handleSaveProduct] Error details:", error);
       const errorMessage = error?.message || error?.data?.message || "เกิดข้อผิดพลาดในการบันทึก";
       toast.error(errorMessage);
     }
@@ -337,8 +375,6 @@ export default function ProductsAndInventory() {
     if (!confirm("คุณแน่ใจหรือว่าต้องการลบสินค้านี้?")) return;
 
     try {
-      console.log("[handleDeleteProduct] Attempting to delete product ID:", id);
-      
       // Optimistic update: remove from UI immediately
       const currentProducts = productsQuery.data || [];
       const updatedProducts = currentProducts.filter((p: any) => p.id !== id);
@@ -348,23 +384,17 @@ export default function ProductsAndInventory() {
         { ...(selectedCategory != null ? { categoryId: selectedCategory } : {}), search: searchTerm },
         updatedProducts
       );
-      
-      console.log("[handleDeleteProduct] Optimistic update applied - product removed from UI");
-      
-      // Then call the mutation to delete from database
+
       await deleteProductMutation.mutateAsync({ id });
-      console.log("[handleDeleteProduct] Delete mutation completed");
       
       // Force refetch to ensure data is synced with backend
       await utils.products.list.invalidate();
       await utils.inventory.list.invalidate();
       await new Promise(resolve => setTimeout(resolve, 200));
       await productsQuery.refetch();
-      
-      console.log("[handleDeleteProduct] Products list refetched");
+
       toast.success("ลบสินค้าสำเร็จ");
     } catch (error: any) {
-      console.error("[handleDeleteProduct] Error details:", error);
       // Revert optimistic update on error by refetching
       await productsQuery.refetch();
       const errorMessage = error?.message || error?.data?.message || "เกิดข้อผิดพลาดในการลบ";
@@ -384,8 +414,12 @@ export default function ProductsAndInventory() {
       setNewCategoryName("");
       setIsCategoryDialogOpen(false);
       await categoriesQuery.refetch();
-    } catch (error) {
-      toast.error("เกิดข้อผิดพลาดในการเพิ่มหมวดหมู่");
+    } catch (error: unknown) {
+      const msg =
+        error && typeof error === "object" && "message" in error && typeof (error as { message: unknown }).message === "string"
+          ? (error as { message: string }).message
+          : "เกิดข้อผิดพลาดในการเพิ่มหมวดหมู่";
+      toast.error(msg);
       console.error(error);
     }
   };
@@ -437,7 +471,7 @@ export default function ProductsAndInventory() {
       productId: normalizedProductId,
       quantity: "",
       type: "in",
-      reason: "",
+      reason: "สั่งซื้อเข้า",
     });
     setIsAdjustDialogOpen(true);
   };
@@ -453,26 +487,39 @@ export default function ProductsAndInventory() {
       toast.error("กรุณากรอกจำนวนที่ถูกต้อง");
       return;
     }
-
     if (!adjustment.reason.trim()) {
       toast.error("กรุณากรอกเหตุผล");
       return;
     }
-
+    const productId = Number(adjustment.productId);
+    if (!Number.isInteger(productId) || productId <= 0) {
+      toast.error("รหัสสินค้าไม่ถูกต้อง");
+      return;
+    }
     try {
-      await adjustStockMutation.mutateAsync({
-        productId: adjustment.productId,
+      const result = await adjustStockMutation.mutateAsync({
+        productId,
         quantity,
         type: adjustment.type,
         reason: adjustment.reason,
       });
-
-      toast.success("ปรับปรุงสต๊อกสำเร็จ");
-      setIsAdjustDialogOpen(false);
+      const newQty = result?.newQuantity;
+      const searchInput = { search: inventorySearchTerm ?? "" };
+      if (typeof newQty === "number") {
+        utils.inventory.list.setData(searchInput, (prev: any[] | undefined) => {
+          if (!Array.isArray(prev)) return prev;
+          return prev.map((item: any) =>
+            String(item?.productId) === String(productId) ? { ...item, quantity: newQty } : item
+          );
+        });
+      }
+      await utils.inventory.list.invalidate();
       await inventoryQuery.refetch();
-    } catch (error) {
-      toast.error("เกิดข้อผิดพลาดในการปรับปรุงสต๊อก");
-      console.error(error);
+      setIsAdjustDialogOpen(false);
+      toast.success("ปรับปรุงสต๊อกสำเร็จ");
+    } catch (error: any) {
+      const msg = error?.message || error?.data?.message || "เกิดข้อผิดพลาดในการปรับปรุงสต๊อก";
+      toast.error(msg);
     }
   };
 
@@ -488,46 +535,84 @@ export default function ProductsAndInventory() {
   return (
     <DashboardLayout>
       <div className="space-y-6 p-6">
-        {/* Header */}
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-4">
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={() => setLocation("/")}
-              className="hover:bg-muted"
-            >
-              <ArrowLeft className="h-5 w-5" />
-            </Button>
-            <div>
-              <h1 className="text-3xl font-bold">สินค้าและสต๊อก</h1>
-              <p className="text-muted-foreground">จัดการเมนูสินค้าและสต๊อกสินค้าคงคลัง</p>
+        <Tabs
+          value={activeTab}
+          onValueChange={(value) => {
+            if (value === "toppings") {
+              setLocation("/toppings");
+              return;
+            }
+            setActiveTab(value);
+          }}
+          className="w-full"
+        >
+          {/* Header + แจ้งเตือน + แถบแท็บ แนบด้านบนเมื่อเลื่อน — หน้าสต๊อกเห็นปุ่มย้อนกลับตลอด */}
+          <div className="sticky top-0 z-10 -mx-6 px-6 pt-4 pb-3 bg-background/95 backdrop-blur border-b space-y-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-4">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setLocation("/")}
+                  className="shrink-0 gap-2"
+                >
+                  <ArrowLeft className="h-4 w-4" />
+                  ย้อนกลับ
+                </Button>
+                <div>
+                  <h1 className="text-3xl font-bold">สินค้าและสต๊อก</h1>
+                  <p className="text-muted-foreground">จัดการเมนูสินค้าและสต๊อกสินค้าคงคลัง</p>
+                </div>
+              </div>
             </div>
+            {(lowStockItems.length > 0 || (user?.role === "admin" && duplicateProductIdsQuery.data?.length)) ? (
+              <Alert className={
+                duplicateProductIdsQuery.data?.length
+                  ? "border-red-300 bg-red-50"
+                  : "border-orange-200 bg-orange-50"
+              }>
+                <AlertTriangle className="h-4 w-4 shrink-0 text-orange-600" />
+                <AlertDescription className="text-left space-y-2">
+                  {lowStockItems.length > 0 && (
+                    <p className="text-orange-800">
+                      {activeTab === "inventory"
+                        ? `มีสินค้า ${lowStockItems.length} รายการที่ใกล้หมดหรือหมด — กดปุ่ม "เพิ่มสต็อก" ในแถวสินค้าด้านล่าง`
+                        : `มีสินค้า ${lowStockItems.length} รายการที่ใกล้หมดหรือหมด — ไปแท็บ "สต๊อกสินค้า" แล้วกดปุ่มเพิ่มสต็อก`}
+                    </p>
+                  )}
+                  {user?.role === "admin" && duplicateProductIdsQuery.data && duplicateProductIdsQuery.data.length > 0 && (
+                    <p className="text-red-800">
+                      มีสินค้าหลายตัวใช้รหัสเดียวกัน → สต็อกจะขึ้น/ลงพร้อมกัน
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="ml-2 border-red-400 text-red-700 hover:bg-red-100"
+                        disabled={fixDuplicateProductIdsMutation.isPending}
+                        onClick={() => fixDuplicateProductIdsMutation.mutate()}
+                      >
+                        {fixDuplicateProductIdsMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                        แก้รหัสซ้ำ ({duplicateProductIdsQuery.data.length} ชุด)
+                      </Button>
+                    </p>
+                  )}
+                </AlertDescription>
+              </Alert>
+            ) : null}
+            <TabsList className="grid w-full grid-cols-3">
+              <TabsTrigger value="products" className="flex items-center gap-2">
+                <Package className="h-4 w-4" />
+                จัดการเมนู
+              </TabsTrigger>
+              <TabsTrigger value="inventory" className="flex items-center gap-2">
+                <Warehouse className="h-4 w-4" />
+                สต๊อกสินค้า
+              </TabsTrigger>
+              <TabsTrigger value="toppings" className="flex items-center gap-2">
+                <Layers className="h-4 w-4" />
+                ท็อปปิ้ง
+              </TabsTrigger>
+            </TabsList>
           </div>
-        </div>
-
-        {/* Low Stock Alert */}
-        {lowStockItems.length > 0 && (
-          <Alert className="border-orange-200 bg-orange-50">
-            <AlertTriangle className="h-4 w-4 text-orange-600" />
-            <AlertDescription className="text-orange-800">
-              มีสินค้า {lowStockItems.length} รายการที่ใกล้หมด กรุณาสั่งซื้อเพิ่มเติม
-            </AlertDescription>
-          </Alert>
-        )}
-
-        {/* Tabs */}
-        <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
-          <TabsList className="grid w-full grid-cols-2">
-            <TabsTrigger value="products" className="flex items-center gap-2">
-              <Package className="h-4 w-4" />
-              จัดการเมนู
-            </TabsTrigger>
-            <TabsTrigger value="inventory" className="flex items-center gap-2">
-              <Warehouse className="h-4 w-4" />
-              สต๊อกสินค้า
-            </TabsTrigger>
-          </TabsList>
 
           {/* Products Tab */}
           <TabsContent value="products" className="space-y-6 mt-6">
@@ -544,6 +629,33 @@ export default function ProductsAndInventory() {
               <Plus className="mr-2 h-4 w-4" />
               เพิ่มสินค้า
             </Button>
+            {user?.role === "admin" && (
+              <>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="text-amber-600 border-amber-300"
+                  disabled={fixDuplicateBarcodesMutation.isPending}
+                  onClick={() => fixDuplicateBarcodesMutation.mutate()}
+                >
+                  {fixDuplicateBarcodesMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
+                  แก้บาร์โค้ดซ้ำ
+                </Button>
+                {duplicateProductIdsQuery.data && duplicateProductIdsQuery.data.length > 0 && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="text-red-600 border-red-300"
+                    disabled={fixDuplicateProductIdsMutation.isPending}
+                    onClick={() => fixDuplicateProductIdsMutation.mutate()}
+                    title="สินค้าหลายตัวใช้ id เดียวกัน = สต็อกลดทั้งสองตัวเมื่อขาย 1 ชิ้น"
+                  >
+                    {fixDuplicateProductIdsMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
+                    แก้ product id ซ้ำ ({duplicateProductIdsQuery.data.length})
+                  </Button>
+                )}
+              </>
+            )}
         </div>
 
         {/* Search & Filter */}
@@ -557,7 +669,10 @@ export default function ProductsAndInventory() {
           <div className="flex flex-wrap gap-2 pb-2">
             <Button
               variant={selectedCategory === undefined ? "default" : "outline"}
-              onClick={() => setSelectedCategory(undefined)}
+              onClick={() => {
+                setSelectedCategory(undefined);
+                setSelectedCategoryIndex(-1);
+              }}
               size="sm"
               className="shrink-0"
             >
@@ -566,8 +681,13 @@ export default function ProductsAndInventory() {
             {categories.map((category, idx) => (
               <Button
                 key={`cat-${category.id}-${idx}`}
-                variant={selectedCategory === category.id ? "default" : "outline"}
-                onClick={() => setSelectedCategory(category.id)}
+                variant={
+                  selectedCategory === category.id && selectedCategoryIndex === idx ? "default" : "outline"
+                }
+                onClick={() => {
+                  setSelectedCategory(category.id);
+                  setSelectedCategoryIndex(idx);
+                }}
                 size="sm"
                 className="shrink-0"
               >
@@ -596,6 +716,7 @@ export default function ProductsAndInventory() {
                 <table className="w-full">
                   <thead>
                     <tr className="border-b">
+                      <th className="text-left py-3 px-4 w-12">ID</th>
                       <th className="text-left py-3 px-4">รูปภาพ</th>
                       <th className="text-left py-3 px-4">SKU</th>
                       <th className="text-left py-3 px-4">ชื่อ</th>
@@ -603,72 +724,115 @@ export default function ProductsAndInventory() {
                       <th className="text-left py-3 px-4">ราคา</th>
                       <th className="text-left py-3 px-4">ต้นทุน</th>
                       <th className="text-left py-3 px-4">สถานะ</th>
+                      <th className="text-left py-3 px-4 w-20">บาร์โค้ด</th>
                       <th className="text-left py-3 px-4">การกระทำ</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {products.map((product) => (
-                      <tr key={product.id} className="border-b hover:bg-muted/50">
-                        <td className="py-3 px-4">
-                          {product.imageUrl ? (
-                            <img
-                              src={product.imageUrl}
-                              alt={product.name}
-                              className="h-10 w-10 object-cover rounded"
-                              onError={(e) => {
-                                console.error("[Products] Image load error:", product.imageUrl);
-                                e.currentTarget.style.display = "none";
-                              }}
-                              onLoad={() => {
-                                console.log("[Products] Image loaded successfully:", product.imageUrl);
-                              }}
-                            />
-                          ) : (
-                            <div className="h-10 w-10 bg-muted rounded" />
-                          )}
-                        </td>
-                        <td className="py-3 px-4 text-sm">{product.sku}</td>
-                        <td className="py-3 px-4 font-medium">{product.name}</td>
-                        <td className="py-3 px-4 text-sm">
-                          {categories.find((c) => c.id === product.categoryId)?.name}
-                        </td>
-                        <td className="py-3 px-4 font-semibold text-accent">
-                          ฿{parseFloat(product.price).toFixed(2)}
-                        </td>
-                        <td className="py-3 px-4 text-sm">
-                          ฿{parseFloat(product.cost || "0").toFixed(2)}
-                        </td>
-                        <td className="py-3 px-4">
-                          <span
-                            className={`text-xs font-semibold px-2 py-1 rounded ${
-                              product.status === "active"
-                                ? "bg-green-100 text-green-800"
-                                : "bg-gray-100 text-gray-800"
-                            }`}
+                    {[...products]
+                      .sort((a, b) => {
+                        const skuCmp = (a.sku ?? "").localeCompare(b.sku ?? "");
+                        return skuCmp !== 0 ? skuCmp : (a.id ?? 0) - (b.id ?? 0);
+                      })
+                      .map((product, index, sorted) => {
+                        const prevSku = index > 0 ? sorted[index - 1].sku : null;
+                        const sameGroup = prevSku != null && prevSku === product.sku;
+                        return (
+                          <tr
+                            key={product.id}
+                            className={`border-b hover:bg-muted/50 ${sameGroup ? "bg-muted/20" : ""}`}
                           >
-                            {product.status === "active" ? "ใช้งาน" : "ปิดใช้งาน"}
-                          </span>
-                        </td>
-                        <td className="py-3 px-4">
-                          <div className="flex gap-2">
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              onClick={() => handleOpenDialog(product)}
-                            >
-                              <Edit2 className="h-4 w-4" />
-                            </Button>
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              onClick={() => handleDeleteProduct(product.id)}
-                            >
-                              <Trash2 className="h-4 w-4 text-destructive" />
-                            </Button>
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
+                            <td className="py-3 px-4 text-sm text-muted-foreground font-mono">{product.id}</td>
+                            <td className="py-3 px-4">
+                              {product.imageUrl ? (
+                                <img
+                                  src={product.imageUrl}
+                                  alt={product.name}
+                                  className="h-10 w-10 object-cover rounded"
+                                  onError={(e) => {
+                                    e.currentTarget.style.display = "none";
+                                  }}
+                                />
+                              ) : (
+                                <div className="h-10 w-10 bg-muted rounded" />
+                              )}
+                            </td>
+                            <td className="py-3 px-4 text-sm">{product.sku}</td>
+                            <td className="py-3 px-4 font-medium">{product.name}</td>
+                            <td className="py-3 px-4 text-sm">
+                              {categories.find((c) => c.id === product.categoryId)?.name}
+                            </td>
+                            <td className="py-3 px-4 font-semibold text-foreground">
+                              ฿{parseFloat(product.price).toFixed(2)}
+                            </td>
+                            <td className="py-3 px-4 text-sm">
+                              ฿{parseFloat(product.cost || "0").toFixed(2)}
+                            </td>
+                            <td className="py-3 px-4">
+                              <span
+                                className={`text-xs font-semibold px-2 py-1 rounded ${
+                                  product.status === "active"
+                                    ? "bg-green-100 text-green-800"
+                                    : "bg-gray-100 text-gray-800"
+                                }`}
+                              >
+                                {product.status === "active" ? "ใช้งาน" : "ปิดใช้งาน"}
+                              </span>
+                            </td>
+                            <td className="py-3 px-4">
+                              {product.barcode?.trim() ? (
+                                <span className="inline-flex items-center gap-1 text-green-700" title={product.barcode}>
+                                  <Barcode className="h-4 w-4" />
+                                  <span className="text-xs">มี</span>
+                                </span>
+                              ) : (
+                                <span className="inline-flex items-center gap-1 text-muted-foreground" title="ไม่มีบาร์โค้ด">
+                                  <Minus className="h-4 w-4" />
+                                  <span className="text-xs">ไม่มี</span>
+                                </span>
+                              )}
+                            </td>
+                            <td className="py-3 px-4">
+                              <div className="flex gap-1">
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  title={product.barcode ? "พิมพ์บาร์โค้ด" : "ไม่มีบาร์โค้ด"}
+                                  disabled={!product.barcode?.trim()}
+                                  onClick={() => {
+                                    if (!product.barcode?.trim()) return;
+                                    setProductForBarcodePrint({
+                                      id: product.id,
+                                      name: product.name,
+                                      price: product.price,
+                                      barcode: product.barcode ?? null,
+                                    });
+                                    setShowBarcodePrint(true);
+                                  }}
+                                >
+                                  <Printer className="h-4 w-4" />
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  title="แก้ไข"
+                                  onClick={() => handleOpenDialog(product)}
+                                >
+                                  <Edit2 className="h-4 w-4" />
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  title="ลบ"
+                                  onClick={() => handleDeleteProduct(product.id)}
+                                >
+                                  <Trash2 className="h-4 w-4 text-destructive" />
+                                </Button>
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
                   </tbody>
                 </table>
               </div>
@@ -691,14 +855,14 @@ export default function ProductsAndInventory() {
               <Card className="border-orange-200 bg-orange-50">
                 <CardHeader>
                   <CardTitle className="text-orange-900">
-                    ⚠️ สินค้าที่ใกล้หมด ({lowStockItems.length})
+                    ⚠️ สินค้าที่ใกล้หมดหรือหมด ({lowStockItems.length})
                   </CardTitle>
                 </CardHeader>
                 <CardContent>
                   <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
                     {lowStockItems.map((item: any) => (
                       <div
-                        key={item.productId}
+                        key={item.sku ?? item.productId}
                         className="p-3 bg-white rounded border border-orange-200"
                       >
                         <p className="font-semibold text-sm">{item.productName}</p>
@@ -718,9 +882,10 @@ export default function ProductsAndInventory() {
                             variant="add"
                             size="sm"
                             onClick={() => handleOpenAdjustDialog(item.productId)}
+                            className="font-semibold"
                           >
                             <Plus className="h-3 w-3 mr-1" />
-                            เพิ่ม
+                            เพิ่มสต็อก
                           </Button>
                         </div>
                       </div>
@@ -760,12 +925,17 @@ export default function ProductsAndInventory() {
                       </thead>
                       <tbody>
                         {inventory.map((item: any) => {
-                          const isLowStock = item.quantity <= (item.minThreshold || 10);
+                          const qty = Number(item.quantity) || 0;
+                          const minT = Number(item.minThreshold) || 10;
+                          const isOut = qty === 0;
+                          const isLowStock = qty <= minT && !isOut;
+                          const isCritical = isOut || isLowStock;
+                          const statusText = isOut ? "หมด" : isLowStock ? "ใกล้หมด" : "ปกติ";
                           return (
                             <tr
-                              key={item.productId}
+                              key={item.sku ?? item.productId}
                               className={`border-b hover:bg-muted/50 ${
-                                isLowStock ? "bg-orange-50" : ""
+                                isCritical ? "bg-orange-50" : ""
                               }`}
                             >
                               <td className="py-3 px-4 text-xs font-mono">
@@ -777,7 +947,7 @@ export default function ProductsAndInventory() {
                               <td className="py-3 px-4 text-right font-semibold">
                                 <span
                                   className={
-                                    isLowStock ? "text-orange-600" : "text-green-600"
+                                    isOut ? "text-red-600" : isLowStock ? "text-orange-600" : "text-green-600"
                                   }
                                 >
                                   {item.quantity}
@@ -789,28 +959,32 @@ export default function ProductsAndInventory() {
                               <td className="py-3 px-4 text-center">
                                 <span
                                   className={`text-xs font-semibold px-2 py-1 rounded ${
-                                    isLowStock
-                                      ? "bg-orange-100 text-orange-800"
-                                      : "bg-green-100 text-green-800"
+                                    isOut
+                                      ? "bg-red-100 text-red-800"
+                                      : isLowStock
+                                        ? "bg-orange-100 text-orange-800"
+                                        : "bg-green-100 text-green-800"
                                   }`}
                                 >
-                                  {isLowStock ? "⚠️ ใกล้หมด" : "✓ ปกติ"}
+                                  {isOut ? "หมด" : isLowStock ? "⚠️ ใกล้หมด" : "✓ ปกติ"}
                                 </span>
                               </td>
                               <td className="py-3 px-4">
                                 ฿{parseFloat(item.price || "0").toFixed(2)}
                               </td>
                               <td className="py-3 px-4">
-                                <div className="flex gap-2">
+                                <div className="flex flex-wrap gap-2 items-center">
                                   <Button
                                     size="sm"
-                                    variant="ghost"
+                                    variant={isCritical ? "add" : "default"}
                                     onClick={() =>
                                       handleOpenAdjustDialog(item.productId)
                                     }
-                                    title="ปรับปรุงสต๊อก"
+                                    title="เพิ่ม/ปรับสต๊อก"
+                                    className={isCritical ? "font-semibold" : ""}
                                   >
-                                    <Edit2 className="h-4 w-4" />
+                                    <Plus className="h-4 w-4 mr-1" />
+                                    เพิ่มสต็อก
                                   </Button>
                                   <Button
                                     size="sm"
@@ -854,65 +1028,74 @@ export default function ProductsAndInventory() {
             </DialogTitle>
           </DialogHeader>
 
-          <div className="space-y-4">
-            {/* Image Upload */}
-            <div>
-              <label className="text-sm font-medium">รูปภาพ</label>
-              <div className="mt-2 flex gap-4">
-                {imagePreview && (
-                  <div className="relative">
-                    <img
-                      src={imagePreview}
-                      alt="preview"
-                      className="h-24 w-24 object-cover rounded"
-                    />
-                    <button
-                      onClick={() => {
-                        setImagePreview("");
-                        setImageFile(null);
-                      }}
-                      className="absolute -top-2 -right-2 bg-destructive text-white rounded-full p-1"
-                    >
-                      <X className="h-3 w-3" />
-                    </button>
+          <div className="space-y-4 max-h-[70vh] overflow-y-auto pr-1">
+            {/* แถวแรก: รูป + SKU + บาร์โค้ด */}
+            <div className="grid grid-cols-[auto_1fr_1fr] gap-4 items-end">
+              <div>
+                <label className="text-sm font-medium">รูป</label>
+                <div className="flex gap-2 mt-1">
+                  {imagePreview ? (
+                    <div className="relative">
+                      <img src={imagePreview} alt="preview" className="h-14 w-14 object-cover rounded border" />
+                      <button type="button" onClick={() => { setImagePreview(""); setImageFile(null); }} className="absolute -top-1 -right-1 bg-destructive text-white rounded-full p-0.5">
+                        <X className="h-2.5 w-2.5" />
+                      </button>
+                    </div>
+                  ) : null}
+                  <label className="flex items-center justify-center w-14 h-14 border-2 border-dashed rounded cursor-pointer hover:bg-muted shrink-0">
+                    <Upload className="h-5 w-5 text-muted-foreground" />
+                    <input type="file" accept="image/*" onChange={handleImageChange} className="hidden" />
+                  </label>
+                </div>
+              </div>
+              <div>
+                <label className="text-sm font-medium">SKU</label>
+                <Input value={formData.sku} onChange={(e) => setFormData({ ...formData, sku: e.target.value })} placeholder="เช่น PROD-001" className="mt-1" />
+              </div>
+              <div>
+                <label className="text-sm font-medium">บาร์โค้ด</label>
+                <RadioGroup value={barcodeSource} onValueChange={(v) => { setBarcodeSource(v as "auto" | "manual"); if (v === "auto") setFormData((p) => ({ ...p, barcode: "" })); }} className="mt-1 flex flex-col gap-2">
+                  <div className="flex items-center gap-2">
+                    <RadioGroupItem value="auto" id="barcode-auto" />
+                    <Label htmlFor="barcode-auto" className="font-normal cursor-pointer">สร้างอัตโนมัติ (แนะนำ)</Label>
                   </div>
+                  <div className="flex items-center gap-2">
+                    <RadioGroupItem value="manual" id="barcode-manual" />
+                    <Label htmlFor="barcode-manual" className="font-normal cursor-pointer">ใช้บาร์โค้ดจากผู้ผลิต</Label>
+                  </div>
+                </RadioGroup>
+                {barcodeSource === "manual" && (
+                  <>
+                    <Input
+                      value={formData.barcode ?? ""}
+                      onChange={(e) => {
+                        const normalized = normalizeEAN13Input(e.target.value, true);
+                        setFormData((p) => ({ ...p, barcode: normalized }));
+                      }}
+                      placeholder="กรอก 12 หลักแรก ระบบจะเติม check digit ให้"
+                      className={`mt-1 font-mono ${(formData.barcode ?? "").length === 13 && !validateEAN13(formData.barcode ?? "").valid ? "border-destructive" : ""}`}
+                      maxLength={13}
+                      inputMode="numeric"
+                      pattern="[0-9]*"
+                      autoComplete="off"
+                    />
+                    {(formData.barcode ?? "").length === 13 && (() => {
+                      const v = validateEAN13(formData.barcode ?? "");
+                      return !v.valid && <p className="text-xs text-destructive mt-0.5">{v.error}</p>;
+                    })()}
+                    <p className="text-xs text-muted-foreground mt-0.5">EAN-13: ตัวเลข 13 หลัก (กรอก 12 หลัก ระบบเติม check digit ให้)</p>
+                  </>
                 )}
-                <label className="flex items-center justify-center w-24 h-24 border-2 border-dashed rounded cursor-pointer hover:bg-muted">
-                  <Upload className="h-6 w-6 text-muted-foreground" />
-                  <input
-                    type="file"
-                    accept="image/*"
-                    onChange={handleImageChange}
-                    className="hidden"
-                  />
-                </label>
+                {barcodeSource === "auto" && <p className="text-xs text-muted-foreground mt-1">ระบบจะสร้างบาร์โค้ดอัตโนมัติเมื่อบันทึก</p>}
               </div>
             </div>
 
-            {/* Form Fields */}
+            {/* ชื่อ + หมวด + ราคา + ต้นทุน + สถานะ */}
             <div className="grid grid-cols-2 gap-4">
               <div>
-                <label className="text-sm font-medium">SKU</label>
-                <Input
-                  value={formData.sku}
-                  onChange={(e) =>
-                    setFormData({ ...formData, sku: e.target.value })
-                  }
-                  placeholder="เช่น PROD-001"
-                />
-              </div>
-
-              <div>
                 <label className="text-sm font-medium">ชื่อสินค้า</label>
-                <Input
-                  value={formData.name}
-                  onChange={(e) =>
-                    setFormData({ ...formData, name: e.target.value })
-                  }
-                  placeholder="ชื่อสินค้า"
-                />
+                <Input value={formData.name} onChange={(e) => setFormData({ ...formData, name: e.target.value })} placeholder="ชื่อสินค้า" className="mt-1" />
               </div>
-
               <div>
                 <label className="text-sm font-medium">หมวดหมู่</label>
                 <Select
@@ -986,13 +1169,79 @@ export default function ProductsAndInventory() {
               <label className="text-sm font-medium">รายละเอียด</label>
               <textarea
                 value={formData.description || ""}
-                onChange={(e) =>
-                  setFormData({ ...formData, description: e.target.value })
-                }
+                onChange={(e) => setFormData({ ...formData, description: e.target.value })}
                 placeholder="รายละเอียดสินค้า"
-                className="w-full px-3 py-2 border rounded text-sm min-h-24"
+                className="w-full px-3 py-2 border rounded text-sm min-h-16 resize-y"
+                rows={2}
               />
             </div>
+
+            {/* บาร์โค้ด — พับได้, แสดงรูปเฉพาะเมื่อ validate ผ่าน (EAN-13) */}
+            {barcodeSource === "manual" && (formData.barcode ?? "").trim() ? (() => {
+              const barcodeVal = validateEAN13(formData.barcode ?? "");
+              return (
+                <Collapsible defaultOpen={false}>
+                  <CollapsibleTrigger asChild>
+                    <button
+                      type="button"
+                      className="w-full flex items-center justify-between gap-2 py-2 px-3 border rounded-lg bg-muted/30 hover:bg-muted/50 text-left text-sm [&[data-state=open]_svg]:rotate-90"
+                    >
+                      <span className="font-medium">บาร์โค้ด (EAN-13)</span>
+                      <span className="font-mono text-muted-foreground truncate">{formData.barcode}</span>
+                      <ChevronRight className="h-4 w-4 shrink-0 transition-transform" />
+                    </button>
+                  </CollapsibleTrigger>
+                  <CollapsibleContent>
+                    <div className="p-3 border rounded-b-lg border-t-0 bg-muted/20 space-y-3">
+                      {!barcodeVal.valid ? (
+                        <Alert variant="destructive">
+                          <AlertTriangle className="h-4 w-4" />
+                          <AlertDescription>{barcodeVal.error ?? "บาร์โค้ดนี้ไม่ตรงรูปแบบที่เลือก"}</AlertDescription>
+                        </Alert>
+                      ) : (
+                        <>
+                          <div className="flex flex-col items-center">
+                            <BarcodeDisplay value={formData.barcode!} format="EAN13" width={2} height={44} displayValue={true} />
+                            <div className="flex gap-2 mt-2 flex-wrap justify-center">
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                onClick={() => {
+                                  setProductForBarcodePrint({
+                                    id: editingProduct?.id ?? 0,
+                                    name: formData.name,
+                                    price: formData.price,
+                                    barcode: formData.barcode?.trim() || null,
+                                  });
+                                  setShowBarcodePrint(true);
+                                }}
+                              >
+                                <Printer className="h-4 w-4 mr-2" />
+                                พิมพ์บาร์โค้ด
+                              </Button>
+                              {user?.role === "admin" && editingProduct?.id && (
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  size="sm"
+                                  className="text-amber-600 border-amber-300 hover:bg-amber-50"
+                                  disabled={regenerateBarcodeMutation.isPending}
+                                  onClick={() => editingProduct?.id && regenerateBarcodeMutation.mutate({ productId: editingProduct.id })}
+                                >
+                                  {regenerateBarcodeMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
+                                  สร้างบาร์โค้ดใหม่
+                                </Button>
+                              )}
+                            </div>
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  </CollapsibleContent>
+                </Collapsible>
+              );
+            })() : null}
 
             {/* Buttons */}
             <div className="flex gap-2 justify-end">
@@ -1186,6 +1435,24 @@ export default function ProductsAndInventory() {
 
             <div>
               <label className="text-sm font-medium">จำนวน</label>
+              <div className="flex flex-wrap gap-2 mt-1">
+                {[10, 20, 50, 100].map((n) => (
+                  <Button
+                    key={n}
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() =>
+                      setAdjustment({
+                        ...adjustment,
+                        quantity: String((Number(adjustment.quantity) || 0) + n),
+                      })
+                    }
+                  >
+                    +{n}
+                  </Button>
+                ))}
+              </div>
               <Input
                 type="number"
                 min="1"
@@ -1197,7 +1464,7 @@ export default function ProductsAndInventory() {
                   })
                 }
                 placeholder="0"
-                className="mt-1"
+                className="mt-2"
               />
             </div>
 
@@ -1297,6 +1564,16 @@ export default function ProductsAndInventory() {
           </div>
         </DialogContent>
       </Dialog>
+
+      {/* พิมพ์บาร์โค้ด — สติ๊กเกอร์ 50×30 mm, 8 ดวงต่อแผ่น A4 */}
+      {productForBarcodePrint && (
+        <BarcodePrintSheet
+          open={showBarcodePrint}
+          onOpenChange={setShowBarcodePrint}
+          product={productForBarcodePrint}
+          copies={8}
+        />
+      )}
     </DashboardLayout>
   );
 }

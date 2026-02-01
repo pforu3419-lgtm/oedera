@@ -135,12 +135,13 @@ export default function Users() {
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-4">
           <Button
-            variant="ghost"
-            size="icon"
+            variant="outline"
+            size="sm"
             onClick={() => setLocation("/")}
-            className="hover:bg-muted"
+            className="shrink-0 gap-2"
           >
-            <ArrowLeft className="h-5 w-5" />
+            <ArrowLeft className="h-4 w-4" />
+            ย้อนกลับ
           </Button>
           <div>
             <h1 className="text-3xl font-bold tracking-tight">จัดการผู้ใช้งาน</h1>

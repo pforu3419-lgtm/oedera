@@ -19,8 +19,9 @@ import {
 } from "@/components/ui/table";
 import { trpc } from "@/lib/trpc";
 import { useState } from "react";
-import { Loader2, Plus, Edit2, Trash2 } from "lucide-react";
+import { Loader2, Plus, Edit2, Trash2, ArrowLeft } from "lucide-react";
 import { toast } from "sonner";
+import { useLocation } from "wouter";
 
 interface ToppingForm {
   id?: number;
@@ -29,6 +30,7 @@ interface ToppingForm {
 }
 
 export default function Toppings() {
+  const [, setLocation] = useLocation();
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [editingTopping, setEditingTopping] = useState<ToppingForm | null>(null);
   const [formData, setFormData] = useState<ToppingForm>({
@@ -118,13 +120,24 @@ export default function Toppings() {
 
   return (
     <DashboardLayout>
-      <div className="space-y-6">
+      <div className="space-y-6 p-6">
         <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-3xl font-bold">จัดการท็อปปิ้ง</h1>
-            <p className="text-muted-foreground mt-1">
-              เพิ่ม แก้ไข หรือลบท็อปปิ้งสำหรับสินค้า
-            </p>
+          <div className="flex items-center gap-4">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setLocation("/")}
+              className="shrink-0 gap-2"
+            >
+              <ArrowLeft className="h-4 w-4" />
+              ย้อนกลับ
+            </Button>
+            <div>
+              <h1 className="text-3xl font-bold">จัดการท็อปปิ้ง</h1>
+              <p className="text-muted-foreground mt-1">
+                เพิ่ม แก้ไข หรือลบท็อปปิ้งสำหรับสินค้า
+              </p>
+            </div>
           </div>
           <Button variant="add" onClick={() => handleOpenDialog()}>
             <Plus className="mr-2 h-4 w-4" />
@@ -142,8 +155,13 @@ export default function Toppings() {
                 <Loader2 className="h-8 w-8 animate-spin" />
               </div>
             ) : toppings.length === 0 ? (
-              <div className="text-center py-8 text-muted-foreground">
-                ยังไม่มีท็อปปิ้ง
+              <div className="text-center py-12 space-y-3">
+                <p className="text-muted-foreground text-lg">ยังไม่มีท็อปปิ้ง</p>
+                <p className="text-sm text-muted-foreground">กดปุ่ม &quot;เพิ่มท็อปปิ้ง&quot; ด้านบนเพื่อเพิ่มรายการ เช่น ไข่มุก ชีส เพิ่มราคา</p>
+                <Button variant="add" size="lg" className="mt-2" onClick={() => handleOpenDialog()}>
+                  <Plus className="mr-2 h-5 w-5" />
+                  เพิ่มท็อปปิ้ง
+                </Button>
               </div>
             ) : (
               <Table>

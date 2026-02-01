@@ -10,8 +10,9 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, Di
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { trpc } from "@/lib/trpc";
-import { Save, Building2, Receipt, FileText, ShoppingCart, Download, RefreshCw, Plus, Edit2, Trash2, Printer, Users, Settings as SettingsIcon } from "lucide-react";
+import { Save, Building2, Receipt, FileText, ShoppingCart, Download, RefreshCw, Plus, Edit2, Trash2, Printer, Users, Settings as SettingsIcon, ArrowLeft } from "lucide-react";
 import { toast } from "sonner";
+import { useLocation } from "wouter";
 import DashboardLayout from "@/components/DashboardLayout";
 import { exportTaxInvoiceToPDF, exportTaxInvoicesToExcel, TaxInvoiceData } from "@/lib/exportTax";
 import { format } from "date-fns";
@@ -19,6 +20,7 @@ import { th } from "date-fns/locale";
 import * as XLSX from "xlsx";
 
 export default function TaxSystem() {
+  const [, setLocation] = useLocation();
   const [activeTab, setActiveTab] = useState("company");
 
   // Company Profile state
@@ -241,9 +243,15 @@ export default function TaxSystem() {
   return (
     <DashboardLayout>
       <div className="space-y-6 p-6">
-        <div>
-          <h1 className="text-3xl font-bold">ระบบภาษี</h1>
-          <p className="text-muted-foreground">จัดการข้อมูลกิจการ ใบกำกับภาษี และรายงาน VAT</p>
+        <div className="flex items-center gap-4">
+          <Button variant="outline" size="sm" onClick={() => setLocation("/")} className="shrink-0 gap-2">
+            <ArrowLeft className="h-4 w-4" />
+            ย้อนกลับ
+          </Button>
+          <div>
+            <h1 className="text-3xl font-bold">ระบบภาษี</h1>
+            <p className="text-muted-foreground">จัดการข้อมูลกิจการ ใบกำกับภาษี และรายงาน VAT</p>
+          </div>
         </div>
 
         <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">

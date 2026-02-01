@@ -9,8 +9,8 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { trpc } from "@/lib/trpc";
-import { useMemo, useReducer, useState } from "react";
-import { Loader2, X, Search, Clock, DollarSign, User, Monitor, Receipt, History, Printer, Check } from "lucide-react";
+import React, { useEffect, useMemo, useReducer, useState } from "react";
+import { Loader2, X, Search, Clock, DollarSign, User, History, Printer, Check } from "lucide-react";
 import { toast } from "sonner";
 import { useLocation } from "wouter";
 import DashboardLayout from "@/components/DashboardLayout";
@@ -33,7 +33,7 @@ interface SelectedCustomer {
 }
 
 type CartAction =
-  | { type: "ADD"; product: any; toppings: Array<{ id: number; name: string; price: number }> }
+  | { type: "ADD"; product: any; toppings: Array<{ id: number; name: string; price: number }>; priceOverride?: number }
   | { type: "REMOVE"; productId: number; name: string }
   | { type: "UPDATE_QTY"; productId: number; quantity: number }
   | { type: "CLEAR" };
@@ -41,25 +41,25 @@ type CartAction =
 function cartReducer(state: CartItem[], action: CartAction): CartItem[] {
   switch (action.type) {
     case "ADD": {
-      const { product, toppings } = action;
+      const { product, toppings, priceOverride } = action;
       const productId = Number(product.id);
-      const basePrice = parseFloat(product.price);
+      const basePrice = priceOverride != null ? priceOverride : parseFloat(product.price);
       const toppingsTotal = toppings.reduce((sum, t) => sum + t.price, 0);
       const itemPrice = basePrice + toppingsTotal;
       const tops = toppings;
-      // ต้องตรงทั้ง productId, ชื่อ และ toppings จึงถือว่าเป็นรายการเดียวกัน
-      // (ถ้า id ซ้ำแต่ชื่อต่าง = คนละสินค้า ไม่ merge กัน)
+      const topsKey = JSON.stringify((tops || []).slice().sort((a, b) => a.id - b.id));
+      // รวมรายการเดียวกัน: productId + ราคาต่อหน่วย + toppings (ไม่ใช้ name เพื่อกัน name เปลี่ยนแล้วไม่ merge)
       const existing = state.find(
         (item) =>
           item.productId === productId &&
-          item.name === product.name &&
-          JSON.stringify(item.toppings || []) === JSON.stringify(tops)
+          parseFloat(item.price).toFixed(2) === itemPrice.toFixed(2) &&
+          JSON.stringify((item.toppings || []).slice().sort((a, b) => a.id - b.id)) === topsKey
       );
       if (existing) {
         return state.map((item) =>
           item.productId === productId &&
-          item.name === product.name &&
-          JSON.stringify(item.toppings || []) === JSON.stringify(tops)
+          parseFloat(item.price).toFixed(2) === itemPrice.toFixed(2) &&
+          JSON.stringify((item.toppings || []).slice().sort((a, b) => a.id - b.id)) === topsKey
             ? {
                 ...item,
                 quantity: item.quantity + 1,
@@ -110,6 +110,18 @@ function cartReducer(state: CartItem[], action: CartAction): CartItem[] {
 export default function Sales() {
   const [, setLocation] = useLocation();
   const [cart, dispatchCart] = useReducer(cartReducer, []);
+  // รับ event จาก POS Bottom Bar (ขาย, พักบิล, เรียกบิล, ตะกร้า) — หน้าขายใช้ POSLayout ห้าม Fullscreen
+  useEffect(() => {
+    const handler = (e: CustomEvent<string>) => {
+      const action = e.detail;
+      if (action === "cart") {
+        document.querySelector("[data-pos-cart-panel]")?.scrollIntoView({ behavior: "smooth" });
+      }
+      // พักบิล / เรียกบิล — ต่อเมื่อมี handler จริงจะเชื่อมตรงนี้
+    };
+    window.addEventListener("pos-bar-action", handler as EventListener);
+    return () => window.removeEventListener("pos-bar-action", handler as EventListener);
+  }, []);
   const [selectedCategory, setSelectedCategory] = useState<number | undefined>();
   const [searchTerm, setSearchTerm] = useState("");
   const [paymentMethod, setPaymentMethod] = useState<"cash" | "transfer" | "card">("cash");
@@ -133,6 +145,11 @@ export default function Sales() {
   const [showToppingDialog, setShowToppingDialog] = useState(false);
   const [selectedProductForTopping, setSelectedProductForTopping] = useState<any>(null);
   const [selectedToppings, setSelectedToppings] = useState<Array<{ id: number; name: string; price: number }>>([]);
+
+  // สแกน QR/Barcode — โฟกัสช่องรับอัตโนมัติ ไม่ต้องคลิกก่อนสแกน
+  const [scanInput, setScanInput] = useState("");
+  const scanInputRef = React.useRef<HTMLInputElement>(null);
+  const utils = trpc.useUtils();
   
   // Queries
   const categoriesQuery = trpc.categories.list.useQuery();
@@ -215,6 +232,45 @@ export default function Sales() {
     dispatchCart({ type: "REMOVE", productId, name });
   };
 
+  // สแกน QR/Barcode → เพิ่มเข้าบิลทันที (รองรับเครื่องสแกน USB + กล้อง)
+  useEffect(() => {
+    scanInputRef.current?.focus();
+  }, []);
+  useEffect(() => {
+    if (!showToppingDialog && !showPaymentDialog) scanInputRef.current?.focus();
+  }, [showToppingDialog, showPaymentDialog]);
+
+  const handleScanSubmit = async () => {
+    const code = scanInput.trim();
+    if (!code) return;
+    setScanInput("");
+    try {
+      const result = await utils.products.lookupByScan.fetch({ code });
+      if (!result) {
+        toast.error("ไม่พบสินค้าในระบบ");
+        scanInputRef.current?.focus();
+        return;
+      }
+      if (result.type === "product") {
+        dispatchCart({ type: "ADD", product: result.product, toppings: [] });
+        toast.success(`เพิ่ม ${result.product.name} เข้าบิล`);
+      } else {
+        dispatchCart({
+          type: "ADD",
+          product: result.product,
+          toppings: [],
+          priceOverride: result.totalPrice,
+        });
+        toast.success(`เพิ่ม ${result.product.name} (จากเครื่องชั่ง) ฿${result.totalPrice.toFixed(2)}`);
+      }
+      // โฟกัสกลับที่ช่องสแกนทันที — ยิงซ้ำได้ต่อ ไม่ต้องคลิก
+      scanInputRef.current?.focus();
+    } catch {
+      toast.error("ไม่พบสินค้าในระบบ");
+      scanInputRef.current?.focus();
+    }
+  };
+
   // Calculations
   const subtotal = cart.reduce((sum, item) => sum + item.subtotal, 0);
   const discount = parseFloat(discountAmount) || 0;
@@ -247,9 +303,6 @@ export default function Sales() {
   const total = subtotalAfterDiscount + tax;
 
   const handleSelectCustomer = (customer: any) => {
-    console.log("[Sales] handleSelectCustomer called with:", customer);
-    console.log("[Sales] Customer ID:", customer.id);
-    console.log("[Sales] Customer name:", customer.name);
     
     setSelectedCustomer({
       id: customer.id,
@@ -259,11 +312,6 @@ export default function Sales() {
     });
     setShowCustomerSearch(false);
     setCustomerSearch("");
-    
-    console.log("[Sales] ✅ Customer selected:", {
-      id: customer.id,
-      name: customer.name
-    });
   };
 
   const handleApplyDiscountCode = async () => {
@@ -328,16 +376,6 @@ export default function Sales() {
 
     try {
       const transactionNumber = `TXN-${Date.now()}`;
-      console.log("[Sales] ========== CREATING TRANSACTION ==========");
-      console.log("[Sales] Selected customer:", selectedCustomer);
-      console.log("[Sales] Customer ID:", selectedCustomer?.id);
-      console.log("[Sales] Customer name:", selectedCustomer?.name);
-      
-      if (selectedCustomer) {
-        console.log("[Sales] ✅ Customer selected - will add loyalty points");
-      } else {
-        console.log("[Sales] ⚠️ No customer selected - no loyalty points will be added");
-      }
       
       await createTransactionMutation.mutateAsync({
         transactionNumber,
@@ -348,7 +386,7 @@ export default function Sales() {
         total: total.toFixed(2),
         paymentMethod,
         items: cart.map((item) => ({
-          productId: item.productId,
+          productId: Number(item.productId),
           quantity: item.quantity,
           unitPrice: item.price,
           discount: "0",
@@ -388,10 +426,7 @@ export default function Sales() {
       setTempPaymentAmount("");
       
       // รีเซ็ต selectedCustomer หลังจาก delay เล็กน้อย
-      setTimeout(() => {
-        console.log("[Sales] Resetting selectedCustomer after transaction");
-        setSelectedCustomer(null);
-      }, 1000);
+      setTimeout(() => setSelectedCustomer(null), 1000);
     } catch (error) {
       toast.error("เกิดข้อผิดพลาดในการบันทึก");
       console.error(error);
@@ -410,20 +445,38 @@ export default function Sales() {
                 alt="Ordera"
                 className="h-12 w-12 drop-shadow-lg"
               />
-              <span className="font-bold text-2xl tracking-tight text-sidebar-foreground drop-shadow-md">
+              <span className="font-bold text-2xl tracking-tight text-sidebar-foreground drop-shadow-md whitespace-nowrap">
                 Ordera
               </span>
             </div>
           </div>
           
-          <div className="flex-1 max-w-md mx-6">
-            <div className="relative">
-              <Search className="absolute left-4 top-1/2 transform -translate-y-1/2 h-5 w-5 text-gray-400" />
+          <div className="flex-1 flex items-center gap-4 max-w-2xl mx-6">
+            <div className="flex-1 relative min-w-0">
+              <Input
+                ref={scanInputRef}
+                type="text"
+                autoComplete="off"
+                placeholder="สแกน QR / บาร์โค้ด (โฟกัสอัตโนมัติ)"
+                value={scanInput}
+                onChange={(e) => setScanInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    handleScanSubmit();
+                  }
+                }}
+                className="h-12 bg-card text-foreground border-2 border-sidebar-accent/50 text-base placeholder:text-muted-foreground"
+                data-scan-input
+              />
+            </div>
+            <div className="w-64 shrink-0 relative">
+              <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-5 w-5 text-muted-foreground" />
               <Input
                 placeholder="ค้นหาสินค้า..."
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
-                className="pl-12 h-12 bg-card text-foreground border-0 text-base"
+                className="pl-10 h-12 bg-card/80 text-foreground border text-base"
               />
             </div>
           </div>
@@ -449,40 +502,44 @@ export default function Sales() {
         >
           {/* Category & Actions */}
           <div className="flex items-center justify-between mb-6 gap-4">
-            <Select
-              value={selectedCategory?.toString() || "all"}
-              onValueChange={(value) => setSelectedCategory(value === "all" ? undefined : parseInt(value))}
-            >
-              <SelectTrigger className="w-64 h-12 text-base">
-                <SelectValue placeholder="หมวดหมู่สินค้า" />
-              </SelectTrigger>
+            <div className="shrink-0">
+              <Select
+                value={
+                  selectedCategory === undefined
+                    ? "all"
+                    : (() => {
+                        const idx = categories.findIndex((c) => c.id === selectedCategory);
+                        return idx >= 0 ? `${selectedCategory}-${idx}` : selectedCategory.toString();
+                      })()
+                }
+                onValueChange={(value) => {
+                  if (value === "all") {
+                    setSelectedCategory(undefined);
+                    return;
+                  }
+                  const idPart = value.includes("-") ? value.split("-")[0] : value;
+                  const num = parseInt(idPart, 10);
+                  if (!Number.isNaN(num)) setSelectedCategory(num);
+                }}
+              >
+                <SelectTrigger className="w-64 h-12 text-base">
+                  <SelectValue placeholder="หมวดหมู่สินค้า" />
+                </SelectTrigger>
               <SelectContent>
                 <SelectItem value="all" className="text-base py-3">รายการโปรด</SelectItem>
-                {categories.map((category) => (
-                  <SelectItem key={category.id} value={category.id.toString()} className="text-base py-3">
+                {categories.map((category, index) => (
+                  <SelectItem
+                    key={`${category.id}-${index}`}
+                    value={`${category.id}-${index}`}
+                    className="text-base py-3"
+                  >
                     {category.name}
                   </SelectItem>
                 ))}
               </SelectContent>
-            </Select>
-            
-            <div className="flex gap-3">
-              <Button variant="outline" className="h-12 px-6 text-base min-w-[120px]">
-                โปรโมชั่น
-              </Button>
-              <Button variant="outline" className="h-12 px-6 text-base min-w-[140px]">
-                <Monitor className="h-5 w-5 mr-2" />
-                จอฝั่งลูกค้า
-              </Button>
-              <Button variant="outline" className="h-12 px-6 text-base min-w-[100px]">
-                <Receipt className="h-5 w-5 mr-2" />
-                พักบิล
-              </Button>
-              <Button variant="outline" className="h-12 px-6 text-base min-w-[120px]">
-                <History className="h-5 w-5 mr-2" />
-                เรียกบิลกลับ
-              </Button>
+              </Select>
             </div>
+            
           </div>
 
           {/* Products Grid */}
@@ -511,7 +568,6 @@ export default function Sales() {
                             e.currentTarget.parentElement!.innerHTML = '<div class="w-full h-40 bg-gray-200 flex items-center justify-center relative"><div class="absolute top-3 right-3 bg-product text-white px-3 py-2 rounded text-sm font-bold">฿' + parseFloat(product.price).toFixed(2) + '</div></div>';
                           }}
                           onLoad={() => {
-                            console.log("[Sales] Image loaded successfully:", product.imageUrl);
                           }}
                         />
                         <div className="absolute top-3 right-3 bg-product text-white px-3 py-2 rounded text-sm font-bold">
@@ -537,19 +593,19 @@ export default function Sales() {
           </div>
         </div>
 
-        {/* Right Panel - Cart */}
-        <div className="w-[420px] bg-white border-l flex flex-col">
+        {/* Right Panel - Cart (POS Bottom Bar กด "ตะกร้า" จะ scroll มาที่นี่) */}
+        <div data-pos-cart-panel className="w-[420px] min-w-[320px] shrink-0 bg-white border-l flex flex-col" lang="th">
           {/* Cart Header */}
           <div className="p-6 border-b flex items-center justify-between gap-3">
             <Button
               variant="outline"
               onClick={() => setShowCustomerSearch(true)}
-              className="flex-1 h-12 text-base"
+              className="flex-1 min-w-0 h-12 text-base"
             >
-              <User className="h-5 w-5 mr-2" />
-              เลือกสมาชิก
+              <User className="h-5 w-5 mr-2 shrink-0" />
+              <span className="min-w-0 truncate">เลือกสมาชิก</span>
             </Button>
-            <Button variant="outline" className="h-12 px-6 text-base">
+            <Button variant="outline" className="h-12 px-6 text-base shrink-0 whitespace-nowrap">
               ราคาปลีก
             </Button>
           </div>
@@ -597,18 +653,66 @@ export default function Sales() {
             )}
           </div>
 
+          {/* โค้ดส่วนลด */}
+          <div className="px-6 py-3 border-t">
+            <div className="flex gap-2">
+              <Input
+                placeholder="ใส่โค้ดส่วนลด"
+                value={discountCode}
+                onChange={(e) => setDiscountCode(e.target.value.toUpperCase())}
+                disabled={!!appliedDiscount}
+                className="flex-1"
+              />
+              {appliedDiscount ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    setAppliedDiscount(null);
+                    setDiscountFromCode(0);
+                    setDiscountCode("");
+                  }}
+                >
+                  ลบโค้ด
+                </Button>
+              ) : (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={handleApplyDiscountCode}
+                  disabled={cart.length === 0 || !discountCode.trim()}
+                >
+                  ใช้โค้ด
+                </Button>
+              )}
+            </div>
+            {appliedDiscount && (
+              <p className="text-sm text-green-600 mt-1">
+                ใช้โค้ด {appliedDiscount.code} แล้ว -฿{discountFromCode.toFixed(2)}
+              </p>
+            )}
+          </div>
+
           {/* Summary */}
           <div className="p-6 border-t space-y-3 bg-gray-50">
             <div className="flex justify-between text-base">
-              <span>รวม</span>
+              <span className="whitespace-nowrap">รวม</span>
               <span className="font-medium">฿{subtotal.toFixed(2)}</span>
             </div>
+            {(discountFromCode + discount + autoDiscount.amount + redeemed) > 0 && (
+              <div className="flex justify-between text-base text-green-600">
+                <span className="whitespace-nowrap">ส่วนลด</span>
+                <span className="font-medium">-฿{(discountFromCode + discount + autoDiscount.amount + redeemed).toFixed(2)}</span>
+              </div>
+            )}
             <div className="flex justify-between text-base">
-              <span>ภาษี</span>
+              <span className="whitespace-nowrap">ภาษี</span>
               <span className="font-medium">฿{tax.toFixed(2)}</span>
             </div>
             <div className="flex justify-between font-bold text-xl border-t pt-3">
-              <span>รวมทั้งหมด</span>
+              <span className="whitespace-nowrap">รวมทั้งหมด</span>
               <span>฿{total.toFixed(2)}</span>
             </div>
           </div>
@@ -619,11 +723,11 @@ export default function Sales() {
               variant="pay"
               onClick={handleCheckout}
               disabled={cart.length === 0 || createTransactionMutation.isPending}
-              className="w-full text-xl py-8 h-auto min-h-[64px] font-bold"
+              className="w-full text-xl py-8 h-auto min-h-[64px] font-bold whitespace-nowrap"
             >
               {createTransactionMutation.isPending ? (
                 <>
-                  <Loader2 className="mr-3 h-6 w-6 animate-spin" />
+                  <Loader2 className="mr-3 h-6 w-6 animate-spin shrink-0" />
                   กำลังบันทึก...
                 </>
               ) : (
@@ -650,10 +754,7 @@ export default function Sales() {
             <Input
               placeholder="ค้นหาตามชื่อหรือเบอร์โทร..."
               value={customerSearch}
-              onChange={(e) => {
-                console.log("[Sales] Customer search changed:", e.target.value);
-                setCustomerSearch(e.target.value);
-              }}
+              onChange={(e) => setCustomerSearch(e.target.value)}
               autoFocus
             />
             <div className="space-y-2 max-h-96 overflow-y-auto">
@@ -675,10 +776,7 @@ export default function Sales() {
                       key={customer.id}
                       variant="outline"
                       className="w-full justify-start"
-                      onClick={() => {
-                        console.log("[Sales] Customer clicked:", customer);
-                        handleSelectCustomer(customer);
-                      }}
+                      onClick={() => handleSelectCustomer(customer)}
                     >
                       <div className="text-left">
                         <p className="font-medium">{customer.name}</p>

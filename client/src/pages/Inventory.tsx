@@ -11,7 +11,7 @@ import {
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { trpc } from "@/lib/trpc";
 import { useState } from "react";
-import { Loader2, AlertTriangle, Plus, Edit2, History, ArrowLeft } from "lucide-react";
+import { Loader2, AlertTriangle, Plus, History, ArrowLeft } from "lucide-react";
 import { toast } from "sonner";
 import { useLocation } from "wouter";
 
@@ -43,7 +43,25 @@ export default function Inventory() {
   );
 
   // Mutations
-  const adjustStockMutation = trpc.inventory.adjustStock.useMutation();
+  const utils = trpc.useUtils();
+  const adjustStockMutation = trpc.inventory.adjustStock.useMutation({
+    onSuccess: async (result, variables) => {
+      await utils.inventory.list.invalidate();
+      if (typeof result?.newQuantity === "number" && variables.productId != null) {
+        utils.inventory.list.setData(
+          { search: searchTerm },
+          (prev: any[] | undefined) => {
+            if (!Array.isArray(prev)) return prev;
+            return prev.map((item: any) =>
+              String(item?.productId) === String(variables.productId)
+                ? { ...item, quantity: result.newQuantity }
+                : item
+            );
+          }
+        );
+      }
+    },
+  });
 
   const inventory = inventoryQuery.data || [];
   const lowStockItems = inventory.filter(
@@ -57,7 +75,7 @@ export default function Inventory() {
       productId: normalizedProductId,
       quantity: "",
       type: "in",
-      reason: "",
+      reason: "สั่งซื้อเข้า",
     });
     setIsAdjustDialogOpen(true);
   };
@@ -80,19 +98,24 @@ export default function Inventory() {
     }
 
     try {
+      const productId = Number(adjustment.productId);
+      if (!Number.isInteger(productId) || productId <= 0) {
+        toast.error("รหัสสินค้าไม่ถูกต้อง");
+        return;
+      }
       await adjustStockMutation.mutateAsync({
-        productId: adjustment.productId,
+        productId,
         quantity,
         type: adjustment.type,
         reason: adjustment.reason,
       });
-
-      toast.success("ปรับปรุงสต๊อกสำเร็จ");
-      setIsAdjustDialogOpen(false);
+      await utils.inventory.list.invalidate();
       await inventoryQuery.refetch();
-    } catch (error) {
-      toast.error("เกิดข้อผิดพลาดในการปรับปรุงสต๊อก");
-      console.error(error);
+      setIsAdjustDialogOpen(false);
+      toast.success("ปรับปรุงสต๊อกสำเร็จ");
+    } catch (error: any) {
+      const msg = error?.message || error?.data?.message || "เกิดข้อผิดพลาดในการปรับปรุงสต๊อก";
+      toast.error(msg);
     }
   };
 
@@ -107,16 +130,17 @@ export default function Inventory() {
 
   return (
     <DashboardLayout>
-      <div className="space-y-6">
+      <div className="space-y-6 p-6">
         {/* Header */}
         <div className="flex items-center gap-4">
           <Button
-            variant="ghost"
-            size="icon"
+            variant="outline"
+            size="sm"
             onClick={() => setLocation("/")}
-            className="hover:bg-muted"
+            className="shrink-0 gap-2"
           >
-            <ArrowLeft className="h-5 w-5" />
+            <ArrowLeft className="h-4 w-4" />
+            ย้อนกลับ
           </Button>
           <div>
             <h1 className="text-3xl font-bold">จัดการสต๊อกสินค้า</h1>
@@ -256,16 +280,18 @@ export default function Inventory() {
                             ฿{parseFloat(item.price || "0").toFixed(2)}
                           </td>
                           <td className="py-3 px-4">
-                            <div className="flex gap-2">
+                            <div className="flex flex-wrap gap-2 items-center">
                               <Button
                                 size="sm"
-                                variant="ghost"
+                                variant={isLowStock ? "add" : "default"}
                                 onClick={() =>
                                   handleOpenAdjustDialog(item.productId)
                                 }
-                                title="ปรับปรุงสต๊อก"
+                                title="เพิ่ม/ปรับสต๊อก"
+                                className={isLowStock ? "font-semibold" : ""}
                               >
-                                <Edit2 className="h-4 w-4" />
+                                <Plus className="h-4 w-4 mr-1" />
+                                เพิ่มสต็อก
                               </Button>
                               <Button
                                 size="sm"
@@ -318,6 +344,24 @@ export default function Inventory() {
 
             <div>
               <label className="text-sm font-medium">จำนวน</label>
+              <div className="flex flex-wrap gap-2 mt-1">
+                {[10, 20, 50, 100].map((n) => (
+                  <Button
+                    key={n}
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() =>
+                      setAdjustment({
+                        ...adjustment,
+                        quantity: String((Number(adjustment.quantity) || 0) + n),
+                      })
+                    }
+                  >
+                    +{n}
+                  </Button>
+                ))}
+              </div>
               <Input
                 type="number"
                 min="1"
@@ -329,7 +373,7 @@ export default function Inventory() {
                   })
                 }
                 placeholder="0"
-                className="mt-1"
+                className="mt-2"
               />
             </div>
 

@@ -15,392 +15,343 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import {
-  Sidebar,
-  SidebarContent,
-  SidebarFooter,
-  SidebarHeader,
-  SidebarInset,
-  SidebarMenu,
-  SidebarMenuButton,
-  SidebarMenuItem,
-  SidebarProvider,
-  SidebarTrigger,
-  useSidebar,
-} from "@/components/ui/sidebar";
 import { getLoginUrl } from "@/const";
-import { useIsMobile } from "@/hooks/useMobile";
-import { trpc } from "@/lib/trpc";
-import { LayoutDashboard, LogOut, PanelLeft, Users, BarChart3, Tag, Heart, Users as UsersIcon, Printer, Building2, FileText, Receipt, ShoppingCart, Settings as SettingsIcon, Plus, Store, Shield, KeyRound } from "lucide-react";
-import { CSSProperties, useEffect, useRef, useState } from "react";
+import {
+  LayoutDashboard,
+  LogOut,
+  Users,
+  BarChart3,
+  Tag,
+  ShoppingCart,
+  Settings as SettingsIcon,
+  Store,
+  KeyRound,
+  Receipt,
+  History,
+  Package,
+} from "lucide-react";
+import { useEffect, useState } from "react";
 import { useLocation } from "wouter";
-import { toast } from "sonner";
-import { DashboardLayoutSkeleton } from './DashboardLayoutSkeleton';
+import { DashboardLayoutSkeleton } from "./DashboardLayoutSkeleton";
 import { Button } from "./ui/button";
+import { cn } from "@/lib/utils";
 
-const menuItems = [
-  { icon: LayoutDashboard, label: "หน้าหลัก", path: "/", roles: ["admin", "manager", "cashier", "user"], requiresStore: false },
+// ========== Layout 3 แบบเท่านั้น ==========
+// 1️⃣ MainLayout — Top Menu เสมอ ใช้กับ: Dashboard, รายงาน, สินค้า, ลูกค้า, พนักงาน, ตั้งค่า
+// 2️⃣ POSLayout — Bottom Menu (ปุ่มขาย, พักบิล, เรียกบิล, ตะกร้า) ใช้กับ: หน้าขายเท่านั้น | ห้าม Fullscreen
+// 3️⃣ FullscreenLayout — ไม่มีเมนู ใช้เฉพาะ: หน้าชำระเงิน, หน้าพิมพ์ใบเสร็จ, Export/Print | ห้ามใช้กับหน้าทั่วไป
+
+/** เมนูด้านบน (MainLayout) */
+const topNavItems = [
+  { icon: LayoutDashboard, label: "ภาพรวมร้าน", path: "/", roles: ["admin", "manager", "cashier", "user"], requiresStore: false },
   { icon: KeyRound, label: "เข้าร้านด้วยรหัสแอดมิน", path: "/enter-admin-code", roles: ["user"], requiresStore: false, showOnlyWhenNoStore: true },
-  { icon: ShoppingCart, label: "ขายหน้าร้าน", path: "/sales", roles: ["admin", "manager", "cashier"], requiresStore: true },
-  { icon: LayoutDashboard, label: "สินค้าและสต๊อก", path: "/products", roles: ["admin", "manager"], requiresStore: true },
-  { icon: Plus, label: "ท็อปปิ้ง", path: "/toppings", roles: ["admin", "manager"], requiresStore: true },
-  { icon: Users, label: "ลูกค้าและสมาชิก", path: "/customers", roles: ["admin", "manager"], requiresStore: true },
+  { icon: ShoppingCart, label: "ขายสินค้า", path: "/sales", roles: ["admin", "manager", "cashier"], requiresStore: true },
+  { icon: Package, label: "จัดการสินค้า", path: "/products", roles: ["admin", "manager"], requiresStore: true },
+  { icon: Users, label: "ลูกค้า", path: "/customers", roles: ["admin", "manager"], requiresStore: true },
   { icon: Tag, label: "ส่วนลด", path: "/discounts", roles: ["admin", "manager"], requiresStore: true },
-  { icon: BarChart3, label: "รายงาน", path: "/reports", roles: ["admin", "manager"], requiresStore: true },
-  { icon: SettingsIcon, label: "ตั้งค่าระบบ", path: "/settings", roles: ["admin"], requiresStore: false },
-  { icon: Building2, label: "ระบบภาษี", path: "/tax", roles: ["admin", "manager"], requiresStore: true },
+  { icon: BarChart3, label: "รายงานยอดขาย", path: "/reports", roles: ["admin", "manager"], requiresStore: true },
+  { icon: SettingsIcon, label: "ตั้งค่า", path: "/settings", roles: ["admin"], requiresStore: false },
   { icon: Store, label: "เข้าร้าน", path: "/join-store", roles: ["cashier"], requiresStore: false, showOnlyWhenNoStore: true },
 ];
 
-const SIDEBAR_WIDTH_KEY = "sidebar-width";
-const DEFAULT_WIDTH = 280;
-const MIN_WIDTH = 200;
-const MAX_WIDTH = 480;
-
-export default function DashboardLayout({
-  children,
-}: {
-  children: React.ReactNode;
-}) {
-  const [location, setLocation] = useLocation();
-  const [sidebarWidth, setSidebarWidth] = useState(() => {
-    const saved = localStorage.getItem(SIDEBAR_WIDTH_KEY);
-    return saved ? parseInt(saved, 10) : DEFAULT_WIDTH;
+function filterMenuByUser(
+  items: typeof topNavItems,
+  user: { role?: string; storeId?: number | null; organizationId?: number | null } | null
+) {
+  if (!user) return [];
+  return items.filter((item) => {
+    if (item.roles && (!user.role || !item.roles.includes(user.role))) return false;
+    if (item.showOnlyWhenNoStore) return !user.storeId;
+    if (item.requiresStore) {
+      if ((user.role === "admin" || user.role === "manager") && !user.organizationId) return true;
+      return !!user.storeId;
+    }
+    return true;
   });
+}
+
+export default function DashboardLayout({ children }: { children: React.ReactNode }) {
+  const [location, setLocation] = useLocation();
   const { loading, user } = useAuth();
 
   useEffect(() => {
-    localStorage.setItem(SIDEBAR_WIDTH_KEY, sidebarWidth.toString());
-  }, [sidebarWidth]);
-
-  useEffect(() => {
-    localStorage.setItem(SIDEBAR_WIDTH_KEY, sidebarWidth.toString());
-  }, [sidebarWidth]);
-
-  useEffect(() => {
-    // ผู้ใช้ทั่วไป (user) ที่ยังไม่มีร้าน: อนุญาตเฉพาะ /, /enter-admin-code, /login, /register
     if (user?.role === "user" && !user?.storeId) {
       const allowed = ["/", "/enter-admin-code", "/login", "/register"];
       if (!allowed.includes(location)) setLocation("/");
       return;
     }
-    // Cashier ที่ยังไม่เข้าร้าน ต้องไปที่หน้า join-store
     if (user?.role === "cashier" && !user?.storeId && location !== "/join-store" && location !== "/login") {
       setLocation("/join-store");
-    }
-    // Cashier ที่เข้าร้านแล้ว ต้องอยู่ที่หน้า /sales เท่านั้น
-    else if (user?.role === "cashier" && user?.storeId && location !== "/sales" && location !== "/join-store") {
+    } else if (user?.role === "cashier" && user?.storeId && location !== "/sales" && location !== "/join-store") {
       setLocation("/sales");
     }
   }, [location, setLocation, user?.role, user?.storeId]);
 
-  if (loading) {
-    return <DashboardLayoutSkeleton />
-  }
+  if (loading) return <DashboardLayoutSkeleton />;
 
   if (!user) {
     return (
-      <div className="flex items-center justify-center min-h-screen">
-        <div className="flex flex-col items-center gap-8 p-8 max-w-md w-full">
+      <div className="flex min-h-screen items-center justify-center">
+        <div className="flex w-full max-w-md flex-col items-center gap-8 p-8">
           <div className="flex flex-col items-center gap-6">
-            <h1 className="text-2xl font-semibold tracking-tight text-center">
-              Sign in to continue
-            </h1>
-            <p className="text-sm text-muted-foreground text-center max-w-sm">
-              Access to this dashboard requires authentication. Continue to launch the login flow.
+            <h1 className="text-center text-2xl font-semibold tracking-tight">Sign in to continue</h1>
+            <p className="max-w-sm text-center text-sm text-muted-foreground">
+              Access to this dashboard requires authentication.
             </p>
           </div>
-          <div className="flex flex-col gap-3 w-full">
-          <Button
-              onClick={() => setLocation("/login")}
-            size="lg"
-            className="w-full shadow-lg hover:shadow-xl transition-all"
-          >
+          <div className="flex w-full flex-col gap-3">
+            <Button size="lg" className="w-full shadow-lg" onClick={() => setLocation("/login")}>
               Sign in with password
             </Button>
             <Button
               variant="outline"
+              size="lg"
+              className="w-full"
               onClick={() => {
                 const loginUrl = getLoginUrl();
                 if (!loginUrl) {
-                  alert(
-                    "OAuth is not configured. Set VITE_OAUTH_PORTAL_URL and VITE_APP_ID."
-                  );
+                  alert("OAuth is not configured.");
                   return;
                 }
                 window.location.href = loginUrl;
               }}
-              size="lg"
-              className="w-full"
             >
               Sign in with OAuth
-          </Button>
+            </Button>
           </div>
         </div>
       </div>
     );
   }
 
-  if (user.role === "cashier" && location !== "/sales") {
-    return null;
-  }
+  if (user.role === "cashier" && location !== "/sales") return null;
+
+  const menuItems = filterMenuByUser(topNavItems, user);
 
   return (
-    <SidebarProvider
-      defaultOpen={false}
-      style={
-        {
-          "--sidebar-width": `${sidebarWidth}px`,
-        } as CSSProperties
-      }
-    >
-      <DashboardLayoutContent setSidebarWidth={setSidebarWidth}>
-        {children}
-      </DashboardLayoutContent>
-    </SidebarProvider>
+    <MainLayout user={user} menuItems={menuItems} setLocation={setLocation}>
+      {children}
+    </MainLayout>
   );
 }
 
-type DashboardLayoutContentProps = {
-  children: React.ReactNode;
-  setSidebarWidth: (width: number) => void;
-};
-
-function DashboardLayoutContent({
+/** 1️⃣ MainLayout — มี Top Menu เสมอ ใช้กับ Dashboard, รายงาน, สินค้า, ลูกค้า, พนักงาน, ตั้งค่า */
+function MainLayout({
+  user,
+  menuItems,
+  setLocation,
   children,
-  setSidebarWidth,
-}: DashboardLayoutContentProps) {
-  const { user, logout } = useAuth();
-  const [location, setLocation] = useLocation();
-  const { state, toggleSidebar } = useSidebar();
-  const isCollapsed = state === "collapsed";
-  const [isResizing, setIsResizing] = useState(false);
+}: {
+  user: { name?: string | null; email?: string | null };
+  menuItems: typeof topNavItems;
+  setLocation: (path: string) => void;
+  children: React.ReactNode;
+}) {
+  const [location] = useLocation();
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
-  const sidebarRef = useRef<HTMLDivElement>(null);
-  const activeMenuItem = menuItems.find(item => item.path === location);
-  const isMobile = useIsMobile();
-
-  useEffect(() => {
-    if (isCollapsed) {
-      setIsResizing(false);
-    }
-  }, [isCollapsed]);
-
-  useEffect(() => {
-    const handleMouseMove = (e: MouseEvent) => {
-      if (!isResizing) return;
-
-      const sidebarLeft = sidebarRef.current?.getBoundingClientRect().left ?? 0;
-      const newWidth = e.clientX - sidebarLeft;
-      if (newWidth >= MIN_WIDTH && newWidth <= MAX_WIDTH) {
-        setSidebarWidth(newWidth);
-      }
-    };
-
-    const handleMouseUp = () => {
-      setIsResizing(false);
-    };
-
-    if (isResizing) {
-      document.addEventListener("mousemove", handleMouseMove);
-      document.addEventListener("mouseup", handleMouseUp);
-      document.body.style.cursor = "col-resize";
-      document.body.style.userSelect = "none";
-    }
-
-    return () => {
-      document.removeEventListener("mousemove", handleMouseMove);
-      document.removeEventListener("mouseup", handleMouseUp);
-      document.body.style.cursor = "";
-      document.body.style.userSelect = "";
-    };
-  }, [isResizing, setSidebarWidth]);
+  const { logout } = useAuth();
 
   return (
-    <>
-      <div className="relative" ref={sidebarRef}>
-        <Sidebar
-          collapsible="offcanvas"
-          className="border-r-0 bg-white"
-          disableTransition={isResizing}
-        >
-          <SidebarHeader className="h-16 justify-center bg-sidebar">
-            <div className="flex items-center gap-3 px-2 transition-all w-full">
+    <div className="min-h-screen bg-white">
+      {/* MainLayout: Top Menu เสมอ — ห้ามซ่อน */}
+      <header className="sticky top-0 z-50 flex min-h-[64px] items-center justify-between border-b bg-sidebar px-3 sm:px-4 text-sidebar-foreground shadow-sm">
+        <div className="flex items-center gap-2 sm:gap-4 shrink-0">
+          <img src="/ordera-logo-white.svg" alt="Ordera" className="h-8 w-8 drop-shadow-lg" />
+          <span className="text-lg font-bold tracking-tight text-sidebar-foreground drop-shadow-md hidden sm:inline">
+            Ordera
+          </span>
+        </div>
+        <nav className="flex flex-1 justify-center gap-2 sm:gap-3 px-2 sm:px-4 min-h-[48px] items-center">
+          {menuItems.map((item) => {
+            const isActive =
+              location === item.path ||
+              (item.path !== "/" && location.startsWith(item.path + "/"));
+            return (
               <button
-                onClick={toggleSidebar}
-                className="h-12 min-h-[var(--touch-target)] w-12 min-w-[var(--touch-target)] flex items-center justify-center hover:bg-sidebar-accent rounded-lg transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring shrink-0 text-sidebar-foreground touch-manipulation"
-                aria-label="Toggle navigation"
+                key={item.path}
+                type="button"
+                title={item.label}
+                onClick={() => setLocation(item.path)}
+                className={cn(
+                  "flex items-center justify-center rounded-xl min-h-[48px] min-w-[48px] p-3 text-sm font-medium transition-colors touch-manipulation active:scale-95",
+                  isActive
+                    ? "bg-sidebar-accent text-white"
+                    : "text-sidebar-foreground/90 hover:bg-sidebar-accent/80 hover:text-white"
+                )}
               >
-                <PanelLeft className="h-5 w-5 text-sidebar-foreground" />
+                <item.icon className="h-6 w-6 shrink-0" />
               </button>
-              {!isCollapsed ? (
-                <div className="flex items-center gap-3 min-w-0">
-                  <img
-                    src="/ordera-logo-white.svg"
-                    alt="Ordera"
-                    className="h-10 w-10 drop-shadow-lg"
-                  />
-                  <span className="font-bold text-xl tracking-tight truncate text-sidebar-foreground drop-shadow-md">
-                    Ordera
-                  </span>
-                </div>
-              ) : null}
-            </div>
-          </SidebarHeader>
-
-          <SidebarContent className="gap-0 bg-white">
-            <SidebarMenu className="px-2 py-1">
-              {menuItems
-                .filter(item => {
-                  // ตรวจสอบ role
-                  if (item.roles && (!user?.role || !item.roles.includes(user.role))) {
-                    return false;
-                  }
-                  
-                  // ถ้า showOnlyWhenNoStore = true แสดงเฉพาะเมื่อยังไม่มี storeId
-                  if (item.showOnlyWhenNoStore) {
-                    return !user?.storeId;
-                  }
-                  
-                  // ถ้า requiresStore = true แสดงเฉพาะเมื่อมี storeId (หรือเป็น admin/manager ที่เป็น owner)
-                  if (item.requiresStore) {
-                    // admin/manager ที่เป็น owner (organizationId = null) ไม่ต้องมี storeId
-                    if ((user?.role === "admin" || user?.role === "manager") && !user?.organizationId) {
-                      return true;
-                    }
-                    // cashier หรือ staff ต้องมี storeId
-                    return !!user?.storeId;
-                  }
-                  
-                  return true;
-                })
-                .map(item => {
-                const isActive = location === item.path;
-                return (
-                  <SidebarMenuItem key={item.path}>
-                    <SidebarMenuButton
-                      isActive={isActive}
-                      onClick={() => setLocation(item.path)}
-                      tooltip={item.label}
-                      className={`h-12 min-h-[var(--touch-target)] transition-all font-normal ${
-                        isActive 
-                          ? "bg-sidebar text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground" 
-                          : "text-gray-700 hover:bg-gray-100"
-                      }`}
-                    >
-                      <item.icon
-                        className={`h-4 w-4 ${isActive ? "text-white" : "text-gray-700"}`}
-                      />
-                      <span className={isActive ? "text-white" : "text-gray-700"}>{item.label}</span>
-                    </SidebarMenuButton>
-                  </SidebarMenuItem>
-                );
-              })}
-            </SidebarMenu>
-          </SidebarContent>
-
-          <SidebarFooter className="p-3 bg-white">
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <button className="flex items-center gap-3 rounded-lg p-3 min-h-[var(--touch-target)] hover:bg-gray-100 transition-colors w-full text-left group-data-[collapsible=icon]:justify-center focus:outline-none focus-visible:ring-2 focus-visible:ring-ring touch-manipulation">
-                  <Avatar className="h-10 w-10 border shrink-0">
-                    <AvatarFallback className="text-xs font-medium">
-                      {user?.name?.charAt(0).toUpperCase()}
-                    </AvatarFallback>
-                  </Avatar>
-                  <div className="flex-1 min-w-0 group-data-[collapsible=icon]:hidden">
-                    <p className="text-sm font-medium truncate leading-none text-gray-700">
-                      {user?.name || "-"}
-                    </p>
-                    <p className="text-xs text-gray-500 truncate mt-1.5">
-                      {user?.email || "-"}
-                    </p>
-                  </div>
-                </button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="w-48">
-                <DropdownMenuItem
-                  onClick={() => setShowLogoutConfirm(true)}
-                  className="cursor-pointer text-destructive focus:text-destructive"
-                >
-                  <LogOut className="mr-2 h-4 w-4" />
-                  <span>ออกจากระบบ</span>
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </SidebarFooter>
-        </Sidebar>
-        <div
-          className={`absolute top-0 right-0 w-2 min-w-[8px] h-full cursor-col-resize hover:bg-primary/20 active:bg-primary/30 transition-colors ${isCollapsed ? "hidden" : ""}`}
-          onMouseDown={() => {
-            if (isCollapsed) return;
-            setIsResizing(true);
-          }}
-          style={{ zIndex: 50 }}
-        />
-      </div>
-
-      <SidebarInset>
-        {/* Header bar with hamburger menu for all devices */}
-        <div className="flex border-b h-16 min-h-[56px] items-center justify-between bg-sidebar text-sidebar-foreground px-4 backdrop-blur supports-[backdrop-filter]:backdrop-blur sticky top-0 z-40">
-          <div className="flex items-center gap-3">
-            <SidebarTrigger className="h-12 min-h-[var(--touch-target)] min-w-[var(--touch-target)] w-12 rounded-lg bg-sidebar-accent hover:bg-sidebar-accent/90 text-sidebar-foreground" />
-            <div className="flex items-center gap-3">
-              <img
-                src="/ordera-logo-white.svg"
-                alt="Ordera"
-                className="h-8 w-8 drop-shadow-lg"
-              />
-              <span className="font-bold text-lg tracking-tight text-sidebar-foreground drop-shadow-md">
-                {activeMenuItem?.label ?? "Ordera"}
-              </span>
-            </div>
-          </div>
+            );
+          })}
+        </nav>
+        <div className="flex items-center gap-1 sm:gap-2 shrink-0">
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button className="flex items-center gap-2 rounded-xl min-h-[48px] min-w-[48px] sm:min-w-0 sm:px-3 justify-center p-2 hover:bg-sidebar-accent/80 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring touch-manipulation">
+                <Avatar className="h-8 w-8 border">
+                  <AvatarFallback className="text-xs">
+                    {user?.name?.charAt(0).toUpperCase() ?? "?"}
+                  </AvatarFallback>
+                </Avatar>
+                <span className="max-w-[120px] truncate text-sm text-sidebar-foreground hidden md:inline">
+                  {user?.name ?? "-"}
+                </span>
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-48">
+              <DropdownMenuItem
+                onClick={() => setShowLogoutConfirm(true)}
+                className="cursor-pointer text-destructive focus:text-destructive"
+              >
+                <LogOut className="mr-2 h-4 w-4" />
+                ออกจากระบบ
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
           <Button
             variant="ghost"
-            size="default"
-            className="min-h-[var(--touch-target)] text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground"
+            size="sm"
+            className="text-sidebar-foreground hover:bg-sidebar-accent hover:text-white hidden sm:flex"
             onClick={() => setShowLogoutConfirm(true)}
-            title="ออกจากระบบ"
           >
-            <LogOut className="h-5 w-5 mr-2" />
-            <span className="hidden sm:inline">ออกจากระบบ</span>
+            <LogOut className="h-4 w-4 mr-1" />
+            ออก
           </Button>
         </div>
-
-        <AlertDialog open={showLogoutConfirm} onOpenChange={setShowLogoutConfirm}>
-          <AlertDialogContent className="p-0 overflow-hidden border-red-200 bg-white max-w-sm">
-            <div className="bg-sidebar py-5 flex justify-center">
-              <img
-                src="/ordera-logo-white.svg"
-                alt="Ordera"
-                className="h-14 w-14 drop-shadow-lg"
-              />
-            </div>
-            <AlertDialogHeader className="p-6 pt-5 text-center">
-              <AlertDialogTitle className="text-gray-800">ยืนยันการออกจากระบบ</AlertDialogTitle>
-              <AlertDialogDescription className="text-gray-600">
-                คุณแน่ใจหรือว่าต้องการออกจากระบบ?
-              </AlertDialogDescription>
-            </AlertDialogHeader>
-            <AlertDialogFooter className="p-6 pt-0 flex flex-row gap-3 justify-center sm:justify-center">
-              <AlertDialogCancel className="border-border text-foreground hover:bg-muted">
-                ยกเลิก
-              </AlertDialogCancel>
-              <Button
-                className="bg-sidebar text-sidebar-foreground hover:bg-sidebar-accent focus:ring-ring"
-                onClick={() => {
-                  setShowLogoutConfirm(false);
-                  logout();
-                }}
-              >
-                ตกลง
-              </Button>
-            </AlertDialogFooter>
-          </AlertDialogContent>
-        </AlertDialog>
-        <main className="flex-1 p-4 bg-white min-h-screen">{children}</main>
-      </SidebarInset>
-    </>
+      </header>
+      <main className="flex-1 p-4 min-h-[calc(100vh-64px)]">{children}</main>
+      <AlertDialog open={showLogoutConfirm} onOpenChange={setShowLogoutConfirm}>
+        <AlertDialogContent className="max-w-sm border p-0 overflow-hidden">
+          <div className="flex justify-center bg-sidebar py-5">
+            <img src="/ordera-logo-white.svg" alt="Ordera" className="h-14 w-14 drop-shadow-lg" />
+          </div>
+          <AlertDialogHeader className="p-6 pt-5 text-center">
+            <AlertDialogTitle>ยืนยันการออกจากระบบ</AlertDialogTitle>
+            <AlertDialogDescription>คุณแน่ใจหรือว่าต้องการออกจากระบบ?</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter className="p-6 pt-0 flex flex-row gap-3 justify-center">
+            <AlertDialogCancel>ยกเลิก</AlertDialogCancel>
+            <Button
+              className="bg-sidebar text-sidebar-foreground hover:bg-sidebar-accent"
+              onClick={() => {
+                setShowLogoutConfirm(false);
+                logout();
+              }}
+            >
+              ตกลง
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </div>
   );
+}
+
+/** 2️⃣ POSLayout — มี Bottom Menu (ปุ่มขาย, พักบิล, เรียกบิล, ตะกร้า) ใช้กับหน้าขายเท่านั้น | ไม่มี Top Menu | ห้าม Fullscreen */
+function POSLayout({
+  user,
+  setLocation,
+  children,
+}: {
+  user: { name?: string | null };
+  setLocation: (path: string) => void;
+  children: React.ReactNode;
+}) {
+  const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
+  const { logout } = useAuth();
+
+  const emitPOSAction = (action: "park-bill" | "recall-bill" | "cart" | "sell") => {
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(new CustomEvent("pos-bar-action", { detail: action }));
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-white flex flex-col">
+      {/* POS: แถบบนมินิมอล (ไม่มี Top Menu แบบ MainLayout) */}
+      <header className="flex h-14 min-h-[56px] shrink-0 items-center justify-between border-b bg-sidebar px-4 text-sidebar-foreground">
+        <div className="flex items-center gap-3">
+          <img src="/ordera-logo-white.svg" alt="Ordera" className="h-8 w-8 drop-shadow-lg" />
+          <span className="font-bold tracking-tight text-sidebar-foreground">Ordera</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="truncate text-sm text-sidebar-foreground max-w-[140px]">{user?.name ?? "-"}</span>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="text-sidebar-foreground hover:bg-sidebar-accent hover:text-white"
+            onClick={() => setShowLogoutConfirm(true)}
+          >
+            <LogOut className="h-4 w-4" />
+          </Button>
+        </div>
+      </header>
+      <main className="flex-1 flex flex-col min-h-0 overflow-hidden">{children}</main>
+      {/* POS Bottom Menu — ปุ่มขาย, พักบิล, เรียกบิล, ตะกร้า (หน้าขายห้ามซ่อน) */}
+      <footer className="shrink-0 border-t bg-sidebar text-sidebar-foreground safe-area-pb">
+        <div className="flex h-14 min-h-[56px] items-center justify-around px-2">
+          <button
+            type="button"
+            onClick={() => emitPOSAction("sell")}
+            className="flex flex-col items-center gap-0.5 rounded-lg px-3 py-2 text-xs font-medium hover:bg-sidebar-accent/80 min-h-[var(--touch-target)]"
+          >
+            <Store className="h-5 w-5" />
+            <span>ขาย</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => emitPOSAction("park-bill")}
+            className="flex flex-col items-center gap-0.5 rounded-lg px-3 py-2 text-xs font-medium hover:bg-sidebar-accent/80 min-h-[var(--touch-target)]"
+          >
+            <Receipt className="h-5 w-5" />
+            <span>พักบิล</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => emitPOSAction("recall-bill")}
+            className="flex flex-col items-center gap-0.5 rounded-lg px-3 py-2 text-xs font-medium hover:bg-sidebar-accent/80 min-h-[var(--touch-target)]"
+          >
+            <History className="h-5 w-5" />
+            <span>เรียกบิล</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => emitPOSAction("cart")}
+            className="flex flex-col items-center gap-0.5 rounded-lg px-3 py-2 text-xs font-medium hover:bg-sidebar-accent/80 min-h-[var(--touch-target)]"
+          >
+            <ShoppingCart className="h-5 w-5" />
+            <span>ตะกร้า</span>
+          </button>
+        </div>
+      </footer>
+      <AlertDialog open={showLogoutConfirm} onOpenChange={setShowLogoutConfirm}>
+        <AlertDialogContent className="max-w-sm border p-0 overflow-hidden">
+          <div className="flex justify-center bg-sidebar py-5">
+            <img src="/ordera-logo-white.svg" alt="Ordera" className="h-14 w-14 drop-shadow-lg" />
+          </div>
+          <AlertDialogHeader className="p-6 pt-5 text-center">
+            <AlertDialogTitle>ยืนยันการออกจากระบบ</AlertDialogTitle>
+            <AlertDialogDescription>คุณแน่ใจหรือว่าต้องการออกจากระบบ?</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter className="p-6 pt-0 flex flex-row gap-3 justify-center">
+            <AlertDialogCancel>ยกเลิก</AlertDialogCancel>
+            <Button
+              className="bg-sidebar text-sidebar-foreground hover:bg-sidebar-accent"
+              onClick={() => {
+                setShowLogoutConfirm(false);
+                logout();
+              }}
+            >
+              ตกลง
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </div>
+  );
+}
+
+/** 3️⃣ FullscreenLayout — ไม่มีเมนู ใช้เฉพาะ: หน้าชำระเงิน, หน้าพิมพ์ใบเสร็จ, Export/Print | ห้ามใช้กับหน้าขาย/รายงาน/จัดการข้อมูล */
+export function FullscreenLayout({ children }: { children: React.ReactNode }) {
+  return <div className="min-h-screen bg-white">{children}</div>;
 }

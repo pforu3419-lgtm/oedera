@@ -12,7 +12,7 @@ import { useAuth } from "@/_core/hooks/useAuth";
 export default function EnterAdminCode() {
   const [, setLocation] = useLocation();
   const [code, setCode] = useState("");
-  const { data: user } = trpc.auth.me.useQuery();
+  const { data: user, refetch: refetchMe } = trpc.auth.me.useQuery();
   const utils = trpc.useUtils();
   const { user: authUser, loading, logout } = useAuth();
 
@@ -20,6 +20,7 @@ export default function EnterAdminCode() {
     onSuccess: async () => {
       toast.success("เชื่อมต่อร้านสำเร็จ คุณเป็น Admin ประจำร้านแล้ว");
       await utils.auth.me.invalidate();
+      await refetchMe();
       setLocation("/");
     },
     onError: (err) => {

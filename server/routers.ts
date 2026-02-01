@@ -1,7 +1,7 @@
 import { COOKIE_NAME, ONE_YEAR_MS } from "@shared/const";
 import { getSessionCookieOptions } from "./_core/cookies";
 import { systemRouter } from "./_core/systemRouter";
-import { publicProcedure, protectedProcedure, router, adminProcedure, managerProcedure } from "./_core/trpc";
+import { publicProcedure, protectedProcedure, router, adminProcedure, managerProcedure, reportsProcedure } from "./_core/trpc";
 import { z } from "zod";
 import * as db from "./db";
 import { TRPCError } from "@trpc/server";
@@ -275,7 +275,18 @@ export const appRouter = router({
             message: "ไม่พบข้อมูล organization",
           });
         }
-        return db.createCategory({ ...input, organizationId: orgId });
+        try {
+          return await db.createCategory({ ...input, organizationId: orgId });
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          if (msg.includes("ID ซ้ำ")) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: "ไม่สามารถสร้างหมวดหมู่ได้ เนื่องจาก ID ซ้ำ",
+            });
+          }
+          throw e;
+        }
       }),
     
     update: managerProcedure // Manager และ Admin แก้ไขได้
@@ -335,16 +346,25 @@ export const appRouter = router({
         return db.getProductBySku(input.sku, orgId);
       }),
 
+    /** สแกน QR/Barcode: คืน product หรือ scale (productCode|weight|totalPrice) */
+    lookupByScan: protectedProcedure
+      .input(z.object({ code: z.string() }))
+      .query(async ({ input, ctx }) => {
+        const orgId = db.getUserOrganizationId(ctx.user);
+        return db.lookupProductByScan(input.code.trim(), orgId);
+      }),
+
     create: protectedProcedure
       .input(
         z.object({
           sku: z.string().min(1),
-          name: z.string().min(1),
+          name: z.string().min(1).refine((n) => !/^\d+$/.test(n.trim()), { message: "ชื่อสินค้าต้องอ่านรู้เรื่อง ห้ามเป็นตัวเลขล้วน" }),
           description: z.string().optional(),
           categoryId: z.number(),
           price: z.string(),
           cost: z.string().optional(),
           imageUrl: z.string().nullable().optional(),
+          barcode: z.string().nullable().optional(),
         })
       )
       .mutation(async ({ input, ctx }) => {
@@ -357,14 +377,30 @@ export const appRouter = router({
             });
           }
           const orgId = db.getUserOrganizationId(ctx.user);
-          console.log("[products.create] Organization ID:", orgId);
           if (!orgId) {
             throw new TRPCError({
               code: "INTERNAL_SERVER_ERROR",
               message: "ไม่พบข้อมูล organization",
             });
           }
-          console.log("[products.create] Creating product with data:", { ...input, organizationId: orgId });
+          // SKU ต้องไม่ซ้ำในร้านเดียว
+          const existingBySku = await db.getProductBySku(input.sku.trim(), orgId);
+          if (existingBySku) {
+            throw new TRPCError({
+              code: "CONFLICT",
+              message: `SKU "${input.sku}" ถูกใช้งานแล้วในร้านนี้`,
+            });
+          }
+          // บาร์โค้ดต้องไม่ซ้ำทั้งระบบ (ใน org เดียวกัน)
+          if (input.barcode && input.barcode.trim()) {
+            const existingByBarcode = await db.getProductByBarcode(input.barcode.trim(), orgId);
+            if (existingByBarcode) {
+              throw new TRPCError({
+                code: "CONFLICT",
+                message: "บาร์โค้ดนี้ถูกใช้งานแล้วโดยสินค้าอื่น",
+              });
+            }
+          }
           const result = await db.createProduct({ ...input, organizationId: orgId });
           console.log("[products.create] Product created successfully:", result.id);
           return result;
@@ -386,21 +422,21 @@ export const appRouter = router({
         z.object({
           id: z.number(),
           sku: z.string().optional(),
-          name: z.string().min(1).optional(),
+          name: z.string().min(1).refine((n) => !/^\d+$/.test((n ?? "").trim()), { message: "ชื่อสินค้าต้องอ่านรู้เรื่อง ห้ามเป็นตัวเลขล้วน" }).optional(),
           description: z.string().optional(),
           categoryId: z.number().optional(),
           price: z.string().optional(),
           cost: z.string().optional(),
           imageUrl: z.string().nullable().optional(),
+          barcode: z.string().nullable().optional(),
           status: z.enum(["active", "inactive"]).optional(),
         })
       )
       .mutation(async ({ input, ctx }) => {
         const { id, ...data } = input;
         
-        // ถ้ามีการเปลี่ยน SKU ให้ตรวจสอบว่า SKU ใหม่ไม่ซ้ำกับสินค้าอื่นใน organization เดียวกัน
+        const orgId = db.getUserOrganizationId(ctx.user);
         if (data.sku) {
-          const orgId = db.getUserOrganizationId(ctx.user);
           const existingProduct = await db.getProductBySku(data.sku, orgId);
           if (existingProduct && existingProduct.id !== id) {
             throw new TRPCError({
@@ -409,21 +445,54 @@ export const appRouter = router({
             });
           }
         }
-        
-        const orgId = db.getUserOrganizationId(ctx.user);
+        if (data.barcode != null && String(data.barcode).trim()) {
+          const existingByBarcode = await db.getProductByBarcode(String(data.barcode).trim(), orgId);
+          if (existingByBarcode && existingByBarcode.id !== id) {
+            throw new TRPCError({
+              code: "CONFLICT",
+              message: "บาร์โค้ดนี้ถูกใช้งานแล้วโดยสินค้าอื่น",
+            });
+          }
+        }
         return db.updateProduct(id, data, orgId);
       }),
 
     delete: managerProcedure // Manager และ Admin ลบได้
       .input(z.object({ id: z.number() }))
       .mutation(async ({ input, ctx }) => {
-        console.log("[products.delete] Attempting to delete product ID:", input.id);
         const orgId = db.getUserOrganizationId(ctx.user);
-        console.log("[products.delete] Organization ID:", orgId);
         await db.deleteProduct(input.id, orgId);
-        console.log("[products.delete] Product deleted successfully");
         return { success: true };
       }),
+
+    /** สร้างบาร์โค้ดใหม่จาก productId (admin only, ปุ่มแก้ฉุกเฉิน) */
+    regenerateBarcode: adminProcedure
+      .input(z.object({ productId: z.number() }))
+      .mutation(async ({ input, ctx }) => {
+        const orgId = db.getUserOrganizationId(ctx.user);
+        return db.regenerateProductBarcode(input.productId, orgId);
+      }),
+
+    /** แก้บาร์โค้ดซ้ำทั้งหมด: ล้างที่ซ้ำ → สร้างใหม่จาก productId (admin only) */
+    fixDuplicateBarcodes: adminProcedure.mutation(async () => {
+      return db.fixDuplicateBarcodes();
+    }),
+
+    /** หา product ที่ id ซ้ำในร้าน (ถ้ามี = สต็อกแสดงเท่ากันทั้งสองตัว) */
+    findDuplicateProductIds: adminProcedure
+      .input(z.object({}).optional())
+      .query(async ({ ctx }) => {
+        const orgId = db.getUserOrganizationId(ctx.user);
+        if (!orgId) return [];
+        return db.findDuplicateProductIds(orgId);
+      }),
+
+    /** แก้ product id ซ้ำ: ให้สินค้าที่ซ้ำได้ id ใหม่และแถว inventory แยก (กันสต็อกลดทั้งสองตัว) */
+    fixDuplicateProductIds: adminProcedure.mutation(async ({ ctx }) => {
+      const orgId = db.getUserOrganizationId(ctx.user);
+      if (!orgId) throw new TRPCError({ code: "BAD_REQUEST", message: "ไม่พบ organization" });
+      return db.fixDuplicateProductIds(orgId);
+    }),
   }),
 
   // ============ CUSTOMERS ============
@@ -569,9 +638,23 @@ export const appRouter = router({
             message: "ไม่พบข้อมูล organization",
           });
         }
+        // ตรวจ payload: ทุกรายการต้องมี productId (ไม่มี = ระบบพัง)
+        for (const item of input.items) {
+          const pid = item.productId;
+          if (pid == null || typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: "orderItems ทุกรายการต้องมี productId ที่ถูกต้อง (ตัวเลขจำนวนเต็มบวก)",
+            });
+          }
+        }
+
+        // 1. สร้างบิล 2. ชำระเงินสำเร็จ (transaction = บันทึกบิล) 3. ตัดสต็อก — ห้ามตัดตอนเพิ่มเข้าตะกร้า/ยิงบาร์โค้ด
+        const cashierName = ctx.user.name || `User #${ctx.user.id}`;
         const transaction = await db.createTransaction({
           transactionNumber: input.transactionNumber,
           cashierId: ctx.user.id,
+          cashierName: cashierName,
           customerId: input.customerId,
           subtotal: input.subtotal,
           tax: input.tax,
@@ -582,37 +665,70 @@ export const appRouter = router({
           organizationId: orgId,
         });
 
-        // Get the transaction ID from the returned transaction object
         const transactionId = (transaction as any).id;
         console.log("[transactions.create] Transaction created with ID:", transactionId);
-        
-        // Create transaction items
-        for (const item of input.items) {
-          await db.createTransactionItem({
-            transactionId,
-            productId: item.productId,
-            quantity: item.quantity,
-            unitPrice: item.unitPrice,
-            discount: item.discount,
-            subtotal: item.subtotal,
-            toppings: item.toppings || [], // ส่งท็อปปิ้งที่เลือก
-          });
 
-          // Update inventory
-          const inventory = await db.getInventoryByProductId(item.productId);
-          if (inventory) {
-            await db.updateInventory(
-              item.productId,
-              inventory.quantity - item.quantity
-            );
-            await db.recordStockMovement({
-              productId: item.productId,
-              movementType: "out",
-              quantity: item.quantity,
-              reason: `Sale - Transaction ${input.transactionNumber}`,
-              userId: ctx.user.id,
+        // ตัดสต็อกเฉพาะสินค้าที่อยู่ในบิล, ใช้ productId เท่านั้น, ห้ามใช้ storeId/sku รวม
+        // 1 order item = 1 การตัดสต็อก — ไม่รวมรายการ; แต่ต้องตรวจสต็อกรวมต่อ productId ก่อน
+        const qtyByProductId = new Map<number, number>();
+        for (const item of input.items) {
+          const pid = item.productId;
+          const qty = Number(item.quantity) || 0;
+          qtyByProductId.set(pid, (qtyByProductId.get(pid) ?? 0) + qty);
+        }
+        for (const [productId, totalQty] of qtyByProductId) {
+          const inv = await db.getInventoryByProductId(productId, orgId);
+          const current = Number(inv?.quantity ?? 0);
+          if (current < totalQty) {
+            const p = await db.getProductById(productId, orgId);
+            const name = p?.name ?? `#${productId}`;
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: `สินค้า "${name}" ไม่เพียงพอ (คงคลัง: ${current}, ต้องการ: ${totalQty})`,
             });
           }
+        }
+
+        // สร้าง order items (หนึ่งแถวต่อรายการในบิล — สำหรับใบเสร็จ)
+        for (const item of input.items) {
+          const productId = item.productId;
+          const quantity = Number(item.quantity) || 0;
+          if (quantity <= 0) continue;
+          const p = await db.getProductById(productId, orgId);
+          const productName = p?.name ?? `#${productId}`;
+          await db.createTransactionItem({
+            transactionId,
+            productId,
+            productName,
+            quantity,
+            unitPrice: item.unitPrice,
+            discount: item.discount,
+            subtotal: String(parseFloat(item.subtotal || "0").toFixed(2)),
+            toppings: item.toppings || [],
+          });
+        }
+
+        // ตัดสต็อกหลังชำระเงินสำเร็จ — รวม qty ต่อ productId แล้วตัดครั้งเดียวต่อสินค้า (กันลดซ้ำสองอัน)
+        const deductByProductId = new Map<number, number>();
+        for (const item of input.items) {
+          const pid = item.productId;
+          const qty = Number(item.quantity) || 0;
+          if (qty <= 0) continue;
+          deductByProductId.set(pid, (deductByProductId.get(pid) ?? 0) + qty);
+        }
+        for (const [productId, totalQty] of deductByProductId) {
+          const inv = await db.getInventoryByProductId(productId, orgId);
+          const currentQty = Number(inv?.quantity ?? 0);
+          const newQty = currentQty - totalQty;
+          console.log(`CUT_STOCK productId=${productId} qty=${totalQty}`);
+          await db.updateInventory(productId, newQty, orgId);
+          await db.recordStockMovement({
+            productId,
+            movementType: "out",
+            quantity: totalQty,
+            reason: `Sale - Transaction ${input.transactionNumber}`,
+            userId: ctx.user.id,
+          });
         }
 
         // สร้าง Tax Invoice อัตโนมัติถ้าร้านจด VAT
@@ -810,18 +926,48 @@ export const appRouter = router({
           productId: z.number(),
           quantity: z.number(),
           type: z.enum(["in", "out", "adjustment"]),
-          reason: z.string(),
+          reason: z.string().min(1, "กรุณากรอกเหตุผล"),
         })
       )
       .mutation(async ({ input, ctx }) => {
-        await db.updateInventory(input.productId, input.quantity);
-        return db.recordStockMovement({
+        const orgId = db.getUserOrganizationId(ctx.user);
+        if (orgId == null) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "ไม่พบข้อมูล organization",
+          });
+        }
+        const inv = await db.getInventoryByProductId(input.productId, orgId);
+        const current = Number(inv?.quantity ?? 0) || 0;
+        let newQty: number;
+        if (input.type === "in") {
+          newQty = current + input.quantity;
+        } else if (input.type === "out") {
+          newQty = current - input.quantity;
+          if (newQty < 0) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: `ห้ามสต็อกติดลบ (คงคลังปัจจุบัน: ${current}, ลด: ${input.quantity})`,
+            });
+          }
+        } else {
+          newQty = input.quantity;
+          if (newQty < 0) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: "ห้ามสต็อกติดลบ",
+            });
+          }
+        }
+        await db.updateInventory(input.productId, newQty, orgId);
+        await db.recordStockMovement({
           productId: input.productId,
           movementType: input.type,
-          quantity: input.quantity,
+          quantity: input.type === "out" ? input.quantity : input.type === "in" ? input.quantity : newQty,
           reason: input.reason,
           userId: ctx.user.id,
         });
+        return { success: true, newQuantity: newQty };
       }),
     
     getMovementHistory: protectedProcedure
@@ -845,11 +991,13 @@ export const appRouter = router({
 
   // ============ REPORTS ============
   reports: router({
-    salesByDateRange: adminProcedure
+    salesByDateRange: reportsProcedure
       .input(
         z.object({
           startDate: z.date(),
           endDate: z.date(),
+          paymentMethod: z.string().optional(),
+          transactionNumberSearch: z.string().optional(),
         })
       )
       .query(async ({ input, ctx }) => {
@@ -858,15 +1006,19 @@ export const appRouter = router({
         start.setUTCHours(0, 0, 0, 0);
         const end = new Date(input.endDate);
         end.setUTCHours(23, 59, 59, 999);
-        const transactions = await db.getTransactionsByDateRange(
+        let transactions = await db.getTransactionsByDateRange(
           start,
           end,
           orgId
         );
-        const transactionIds = transactions.map((t) => t.id);
-        const allItems = await db.getTransactionItemsByTransactionIds(transactionIds);
-        const totalItems = allItems.reduce((sum, i) => sum + (i.quantity || 0), 0);
-        
+        const rid = (ctx as { reportRestrictCashierId?: number }).reportRestrictCashierId;
+        if (rid != null) transactions = transactions.filter((t) => parseInt(String(t.cashierId), 10) === rid);
+        if (input.paymentMethod && input.paymentMethod !== "all") transactions = transactions.filter((t) => (t.paymentMethod || "") === input.paymentMethod);
+        if (input.transactionNumberSearch?.trim()) {
+          const q = input.transactionNumberSearch.trim().toLowerCase();
+          transactions = transactions.filter((t) => (t.transactionNumber || "").toLowerCase().includes(q));
+        }
+        // จำนวนบิล = นับจาก orders เท่านั้น (ห้ามนับจาก items)
         const totalSales = transactions.reduce(
           (sum, t) => sum + parseFloat(t.total || "0"),
           0
@@ -881,8 +1033,7 @@ export const appRouter = router({
         );
 
         return {
-          totalTransactions: transactions.length,
-          totalItems,
+          totalTransactions: transactions.length, // จำนวนบิล = นับจาก orders เท่านั้น
           totalSales,
           totalTax,
           totalDiscount,
@@ -890,7 +1041,7 @@ export const appRouter = router({
         };
       }),
     
-    topProducts: adminProcedure
+    topProducts: reportsProcedure
       .input(
         z.object({
           startDate: z.date(),
@@ -900,17 +1051,18 @@ export const appRouter = router({
       )
       .query(async ({ input, ctx }) => {
         const orgId = db.getUserOrganizationId(ctx.user);
+        const rid = (ctx as { reportRestrictCashierId?: number }).reportRestrictCashierId;
         const start = new Date(input.startDate);
         start.setUTCHours(0, 0, 0, 0);
         const end = new Date(input.endDate);
         end.setUTCHours(23, 59, 59, 999);
-        const topProducts = await db.getTopSellingProducts(
+        return db.getTopSellingProducts(
           start,
           end,
           input.limit ?? 10,
-          orgId
+          orgId,
+          rid ?? undefined
         );
-        return topProducts;
       }),
     
     salesByPaymentMethod: adminProcedure
@@ -946,7 +1098,7 @@ export const appRouter = router({
         return paymentMethods;
       }),
     
-    dailySales: adminProcedure
+    dailySales: reportsProcedure
       .input(
         z.object({
           startDate: z.date(),
@@ -959,14 +1111,10 @@ export const appRouter = router({
         start.setUTCHours(0, 0, 0, 0);
         const end = new Date(input.endDate);
         end.setUTCHours(23, 59, 59, 999);
-        const transactions = await db.getTransactionsByDateRange(
-          start,
-          end,
-          orgId
-        );
-        
+        let transactions = await db.getTransactionsByDateRange(start, end, orgId);
+        const rid = (ctx as { reportRestrictCashierId?: number }).reportRestrictCashierId;
+        if (rid != null) transactions = transactions.filter((t) => parseInt(String(t.cashierId), 10) === rid);
         const dailySales: Record<string, { count: number; total: number }> = {};
-        
         transactions.forEach((t) => {
           const date = new Date(t.createdAt).toISOString().split("T")[0];
           if (!dailySales[date]) {
@@ -979,7 +1127,7 @@ export const appRouter = router({
         return dailySales;
       }),
     
-    exportSalesReport: adminProcedure
+    exportSalesReport: reportsProcedure
       .input(
         z.object({
           startDate: z.date(),
@@ -993,11 +1141,9 @@ export const appRouter = router({
         start.setUTCHours(0, 0, 0, 0);
         const end = new Date(input.endDate);
         end.setUTCHours(23, 59, 59, 999);
-        const transactions = await db.getTransactionsByDateRange(
-          start,
-          end,
-          orgId
-        );
+        let transactions = await db.getTransactionsByDateRange(start, end, orgId);
+        const rid = (ctx as { reportRestrictCashierId?: number }).reportRestrictCashierId;
+        if (rid != null) transactions = transactions.filter((t) => parseInt(String(t.cashierId), 10) === rid);
         
         const totalSales = transactions.reduce(
           (sum, t) => sum + parseFloat(t.total || "0"),
@@ -1029,19 +1175,26 @@ export const appRouter = router({
     /**
      * ประวัติการขายแยกตามพนักงาน – ดูได้ว่าสินค้า/อาหารแต่ละชิ้น พนักงานคนไหนเป็นคนขาย
      * ใช้ cashierId ของ transaction (พนักงานที่กดชำระเงิน = คนขายทั้งบิล)
+     * Admin/Manager: ดูทั้งหมด; Cashier: เฉพาะบิลของตัวเอง
      */
-    salesAudit: adminProcedure
+    salesAudit: reportsProcedure
       .input(
         z.object({
           startDate: z.date(),
           endDate: z.date(),
           cashierId: z.number().optional(),
           productId: z.number().optional(),
+          paymentMethod: z.string().optional(),
+          transactionNumberSearch: z.string().optional(),
+          viewMode: z.enum(["bills", "items"]).optional().default("items"), // "bills" = ระดับบิล, "items" = ระดับรายการ
         })
       )
       .query(async ({ input, ctx }) => {
         const orgId = db.getUserOrganizationId(ctx.user);
         if (!orgId) return { rows: [] };
+
+        const rid = (ctx as { reportRestrictCashierId?: number }).reportRestrictCashierId;
+        const effectiveCashierId = rid != null ? rid : input.cashierId;
 
         const start = new Date(input.startDate);
         start.setUTCHours(0, 0, 0, 0);
@@ -1053,25 +1206,75 @@ export const appRouter = router({
           orgId
         );
 
-        if (input.cashierId != null) {
+        if (effectiveCashierId != null) {
           transactions = transactions.filter(
-            (t) => parseInt(String(t.cashierId), 10) === input.cashierId
+            (t) => parseInt(String(t.cashierId), 10) === effectiveCashierId
           );
         }
+        if (input.paymentMethod && input.paymentMethod !== "all") {
+          transactions = transactions.filter((t) => (t.paymentMethod || "") === input.paymentMethod);
+        }
+        if (input.transactionNumberSearch?.trim()) {
+          const q = input.transactionNumberSearch.trim().toLowerCase();
+          transactions = transactions.filter((t) => (t.transactionNumber || "").toLowerCase().includes(q));
+        }
 
+        // ใช้ cashierName จาก transaction โดยตรง (ไม่ต้อง JOIN users - ป้องกันชื่อเปลี่ยน)
+        // ถ้า transaction เก่ายังไม่มี cashierName ให้ fallback ไป JOIN (backward compatibility)
         const cashierIds = Array.from(new Set(transactions.map((t) => String(t.cashierId))));
         const cashierMap: Record<string, string> = {};
         for (const idStr of cashierIds) {
-          const u = await db.getUserById(parseInt(idStr, 10), orgId);
-          cashierMap[idStr] = u?.name ?? `ID: ${idStr}`;
+          // ตรวจสอบว่ามี transaction ที่มี cashierName แล้วหรือยัง
+          const txWithName = transactions.find((t) => String(t.cashierId) === idStr && (t as any).cashierName);
+          if (txWithName) {
+            cashierMap[idStr] = (txWithName as any).cashierName;
+          } else {
+            // Fallback: JOIN จาก users (สำหรับ transaction เก่า)
+            const u = await db.getUserById(parseInt(idStr, 10), orgId);
+            cashierMap[idStr] = u?.name ?? `ID: ${idStr}`;
+          }
         }
 
+        // โหมด "bills" = ตารางบิลขาย (1 บิล = 1 แถว) — ใช้ข้อมูลจาก orders เท่านั้น ไม่ใช้ $unwind
+        if (input.viewMode === "bills") {
+          const transactionIds = transactions.map((t) => t.id);
+          // จำนวนรายการในบิล = items.length (จำนวนแถวใน transactionItems) ไม่ใช่ sum(quantity)
+          const lineCountByTx = await db.getTransactionLineCounts(transactionIds);
+
+          const rows = transactions
+            .map((t) => {
+              const txCashierName = (t as any).cashierName || cashierMap[String(t.cashierId)] || `ID: ${t.cashierId}`;
+              const lineCount = lineCountByTx[t.id] ?? 0;
+              return {
+                transactionId: t.id,
+                transactionNumber: t.transactionNumber ?? "",
+                createdAt: t.createdAt,
+                cashierId: String(t.cashierId),
+                cashierName: txCashierName,
+                paymentMethod: t.paymentMethod ?? "",
+                lineCount, // จำนวนรายการในบิล = items.length
+                total: t.total || "0", // ยอดรวมบิลจาก orders เท่านั้น
+              };
+            })
+            .sort(
+              (a, b) =>
+                new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+            );
+
+          return { rows };
+        }
+
+        // โหมด "items" = รายงานระดับรายการ (1 item = 1 row) - โค้ดเดิม
         const allItems: Array<{
           transactionId: number;
           transactionNumber: string;
           createdAt: Date;
           cashierId: string;
+          cashierName: string;
+          paymentMethod: string;
+          transactionTotal: string;
           productId: number;
+          productName: string;
           quantity: number;
           unitPrice: string;
           subtotal: string;
@@ -1079,18 +1282,25 @@ export const appRouter = router({
 
         for (const t of transactions) {
           const items = await db.getTransactionItems(t.id);
+          const txCashierName = (t as any).cashierName || cashierMap[String(t.cashierId)] || `ID: ${t.cashierId}`;
           for (const item of items) {
             if (
               input.productId != null &&
               Number(item.productId) !== input.productId
             )
               continue;
+            const rawName = (item as any).productName;
+            const productName = rawName?.trim() ? rawName : `#${item.productId}`;
             allItems.push({
               transactionId: t.id,
               transactionNumber: t.transactionNumber ?? "",
               createdAt: t.createdAt,
               cashierId: String(t.cashierId),
+              cashierName: txCashierName,
+              paymentMethod: t.paymentMethod ?? "",
+              transactionTotal: t.total || "0",
               productId: Number(item.productId),
+              productName,
               quantity: item.quantity,
               unitPrice: item.unitPrice ?? "0",
               subtotal: item.subtotal ?? "0",
@@ -1098,11 +1308,20 @@ export const appRouter = router({
           }
         }
 
-        const productIds = Array.from(new Set(allItems.map((i) => i.productId)));
-        const productMap: Record<number, string> = {};
-        for (const id of productIds) {
-          const p = await db.getProductById(id, orgId);
-          productMap[id] = p?.name ?? `#${id}`;
+        // เติมชื่อสินค้าจาก products เมื่อบิลเก่าไม่มี productName (กันแสดง "#1" หลายแถว)
+        const missingNames = new Set<number>();
+        for (const i of allItems) {
+          if (i.productName === `#${i.productId}`) missingNames.add(i.productId);
+        }
+        const productNameById: Record<number, string> = {};
+        for (const pid of missingNames) {
+          const p = await db.getProductById(pid, orgId);
+          productNameById[pid] = p?.name?.trim() ? p.name : `#${pid}`;
+        }
+        for (const i of allItems) {
+          if (i.productName === `#${i.productId}` && productNameById[i.productId]) {
+            i.productName = productNameById[i.productId];
+          }
         }
 
         const rows = allItems
@@ -1111,12 +1330,14 @@ export const appRouter = router({
             transactionNumber: i.transactionNumber,
             createdAt: i.createdAt,
             productId: i.productId,
-            productName: productMap[i.productId] ?? `#${i.productId}`,
+            productName: i.productName,
             quantity: i.quantity,
             unitPrice: i.unitPrice,
             subtotal: i.subtotal,
+            transactionTotal: i.transactionTotal,
             cashierId: i.cashierId,
-            cashierName: cashierMap[i.cashierId] ?? "-",
+            cashierName: i.cashierName,
+            paymentMethod: i.paymentMethod,
           }))
           .sort(
             (a, b) =>
@@ -1124,6 +1345,72 @@ export const appRouter = router({
           );
 
         return { rows };
+      }),
+
+    /** สรุปรายพนักงาน: จำนวนบิล ยอดรวม เวลาเริ่ม-สิ้นสุด */
+    staffPerformance: reportsProcedure
+      .input(z.object({ startDate: z.date(), endDate: z.date() }))
+      .query(async ({ input, ctx }) => {
+        const orgId = db.getUserOrganizationId(ctx.user);
+        const start = new Date(input.startDate);
+        start.setUTCHours(0, 0, 0, 0);
+        const end = new Date(input.endDate);
+        end.setUTCHours(23, 59, 59, 999);
+        let transactions = await db.getTransactionsByDateRange(start, end, orgId);
+        const rid = (ctx as { reportRestrictCashierId?: number }).reportRestrictCashierId;
+        if (rid != null) transactions = transactions.filter((t) => parseInt(String(t.cashierId), 10) === rid);
+        const byCashier: Record<string, { billCount: number; totalSales: number; firstAt: Date; lastAt: Date }> = {};
+        for (const t of transactions) {
+          const k = String(t.cashierId);
+          if (!byCashier[k]) byCashier[k] = { billCount: 0, totalSales: 0, firstAt: t.createdAt, lastAt: t.createdAt };
+          byCashier[k].billCount += 1;
+          byCashier[k].totalSales += parseFloat(t.total || "0");
+          if (new Date(t.createdAt) < new Date(byCashier[k].firstAt)) byCashier[k].firstAt = t.createdAt;
+          if (new Date(t.createdAt) > new Date(byCashier[k].lastAt)) byCashier[k].lastAt = t.createdAt;
+        }
+        const cashierIds = Object.keys(byCashier);
+        const names: Record<string, string> = {};
+        for (const id of cashierIds) {
+          const u = await db.getUserById(parseInt(id, 10), orgId);
+          names[id] = u?.name ?? `#${id}`;
+        }
+        return Object.entries(byCashier)
+          .map(([cashierId, v]) => ({
+            cashierId: parseInt(cashierId, 10),
+            cashierName: names[cashierId] ?? `#${cashierId}`,
+            billCount: v.billCount,
+            totalSales: v.totalSales,
+            firstSaleAt: v.firstAt,
+            lastSaleAt: v.lastAt,
+          }))
+          .sort((a, b) => b.totalSales - a.totalSales);
+      }),
+
+    /** รายละเอียดบิล — ดึงจาก order.items เท่านั้น ห้าม join products/stock/cart */
+    getTransactionDetail: reportsProcedure
+      .input(z.object({ id: z.number() }))
+      .query(async ({ input, ctx }) => {
+        const orgId = db.getUserOrganizationId(ctx.user);
+        const t = await db.getTransactionById(input.id, orgId);
+        if (!t) throw new TRPCError({ code: "NOT_FOUND", message: "ไม่พบบิล" });
+        const rid = (ctx as { reportRestrictCashierId?: number }).reportRestrictCashierId;
+        if (rid != null && parseInt(String(t.cashierId), 10) !== rid) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "ไม่มีสิทธิ์ดูบิลนี้" });
+        }
+        const items = await db.getTransactionItems(t.id);
+        const cashierName = (t as any).cashierName ?? (await db.getUserById(parseInt(String(t.cashierId), 10), orgId))?.name ?? `#${t.cashierId}`;
+        return {
+          transaction: t,
+          cashierName,
+          items: items.map((i) => ({
+            productId: Number(i.productId),
+            productName: (i as any).productName ?? `#${i.productId}`,
+            quantity: i.quantity,
+            unitPrice: i.unitPrice ?? "0",
+            subtotal: i.subtotal ?? "0",
+            toppings: i.toppings || [],
+          })),
+        };
       }),
   }),
 

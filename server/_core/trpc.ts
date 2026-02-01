@@ -65,3 +65,26 @@ export const managerProcedure = protectedProcedure.use(
     });
   }),
 );
+
+// ประวัติการขาย: Admin/Manager ดูทั้งหมด, Cashier ดูเฉพาะบิลของตัวเอง
+export const reportsProcedure = protectedProcedure.use(
+  t.middleware(async opts => {
+    const { ctx, next } = opts;
+    if (!ctx.user) {
+      throw new TRPCError({ code: "UNAUTHORIZED", message: "กรุณาเข้าสู่ระบบ" });
+    }
+    const role = ctx.user.role;
+    const allowed = role === "admin" || role === "manager" || role === "cashier";
+    if (!allowed) {
+      throw new TRPCError({ code: "FORBIDDEN", message: "ไม่มีสิทธิ์ดูประวัติการขาย" });
+    }
+    const reportRestrictCashierId = role === "cashier" ? ctx.user.id : undefined;
+    return next({
+      ctx: {
+        ...ctx,
+        user: ctx.user,
+        reportRestrictCashierId,
+      },
+    });
+  }),
+);

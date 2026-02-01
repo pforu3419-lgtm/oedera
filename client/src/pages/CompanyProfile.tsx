@@ -72,8 +72,9 @@ export default function CompanyProfile() {
     <DashboardLayout>
       <div className="space-y-6 p-6">
         <div className="flex items-center gap-4">
-          <Button variant="ghost" size="icon" onClick={() => setLocation("/")}>
+          <Button variant="outline" size="sm" onClick={() => setLocation("/")} className="shrink-0 gap-2">
             <ArrowLeft className="h-4 w-4" />
+            ย้อนกลับ
           </Button>
           <div>
             <h1 className="text-3xl font-bold">ข้อมูลกิจการ</h1>
