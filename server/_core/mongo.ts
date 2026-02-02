@@ -24,12 +24,17 @@ export async function getMongoDb() {
     }
   }
 
-  let uri = process.env.MONGODB_URI || "";
+  let uri = process.env.MONGODB_URI_STANDARD || process.env.MONGODB_URI || "";
   if (!uri) {
     throw new Error("MONGODB_URI is not configured. Set it in env.runtime (local) or in your host's Environment (e.g. Render dashboard).");
   }
 
-  // Force TLS for Atlas (fixes SSL alert 80 on Render with Node 20)
+  // MONGODB_URI_STANDARD: Use Standard connection string (not SRV) to avoid SSL alert 80 on Render
+  if (process.env.MONGODB_URI_STANDARD) {
+    console.log("[MongoDB] Using MONGODB_URI_STANDARD (non-SRV format)");
+  }
+
+  // Force TLS for Atlas
   if (uri.includes("mongodb") && !uri.includes("tls=") && !uri.includes("ssl=")) {
     const sep = uri.includes("?") ? "&" : "?";
     uri = `${uri}${sep}tls=true`;
@@ -42,8 +47,9 @@ export async function getMongoDb() {
       connectTimeoutMS: 30000,
       socketTimeoutMS: 30000,
       autoSelectFamily: false,
+      family: 4,
       tls: true,
-      tlsAllowInvalidCertificates: true, // Workaround for SSL alert 80 on Render+Atlas
+      tlsAllowInvalidCertificates: true,
     };
     client = new MongoClient(uri, options);
     await client.connect();
@@ -64,6 +70,8 @@ export async function getMongoDb() {
       console.error("[MongoDB] 💡 Authentication failed. Check username and password in MONGODB_URI.");
     } else if (errorMessage.includes("timeout")) {
       console.error("[MongoDB] 💡 Connection timeout. Check network and MongoDB Atlas IP whitelist.");
+    } else if (errorMessage.includes("0A000438") || errorMessage.includes("SSL alert number 80")) {
+      console.error("[MongoDB] 💡 SSL alert 80: Try MONGODB_URI_STANDARD instead of mongodb+srv. In Atlas: Connect > Drivers > copy Standard connection string, add &directConnection=true, set as MONGODB_URI_STANDARD in Render.");
     }
     
     if (client) {
