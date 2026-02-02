@@ -15,6 +15,7 @@
 |-----|-------|----------|
 | **JWT_SECRET** | สตริงลับอย่างน้อย 20 ตัว (เช่น `my-super-secret-jwt-key-2024`) | **จำเป็น** — ใช้เข้ารหัส session/cookie |
 | **MONGODB_URI** | `mongodb+srv://user:pass@cluster.mongodb.net/ordera?retryWrites=true&w=majority` หรือ MONGODB_URI_STANDARD (ดู RENDER_MONGODB_SSL_FIX.md) | **จำเป็น** |
+| **ORDERA_MASTER_CODE** | รหัสสำหรับเข้าหน้า /create-admin-codes (เช่น `ordera-master-2024`) | จำเป็นถ้าต้องการสร้างรหัสแอดมิน |
 
 5. กด **Save Changes**  
    - Render จะ **redeploy** ให้เองหลัง save
@@ -25,7 +26,7 @@
 
 | Key | ใช้เมื่อ |
 |-----|----------|
-| ORDERA_MASTER_CODE | ต้องการใช้รหัสหลักจาก env สำหรับ /create-admin-codes (ไม่บังคับ ถ้าใช้จาก DB) |
+| NODE_VERSION | ใช้ Node 20 (เช่น `20`) — แก้ SSL กับ MongoDB |
 | NODE_ENV | Render ตั้งเป็น `production` ให้อยู่แล้ว |
 | PORT | Render ใส่ให้อัตโนมัติ |
 

@@ -92,8 +92,11 @@ export default function CreateAdminCodes() {
               <KeyRound className="h-7 w-7 text-amber-600" />
             </div>
             <CardTitle>กรอกรหัสเพื่อเข้าสู่ระบบ</CardTitle>
-            <CardDescription>
-              ระบบสร้างรหัสแอดมิน — กรอกรหัสที่ได้รับจากผู้ดูแลเพื่อเข้าสู่หน้านี้
+            <CardDescription className="space-y-2">
+              <span className="block">ระบบสร้างรหัสแอดมิน — กรอกรหัสที่ได้รับจากผู้ดูแลเพื่อเข้าสู่หน้านี้</span>
+              <span className="block text-xs text-amber-600 mt-2">
+                รหัส = ORDERA_MASTER_CODE ที่ตั้งใน Render Environment (หรือรหัสที่ตั้งใน Settings)
+              </span>
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
