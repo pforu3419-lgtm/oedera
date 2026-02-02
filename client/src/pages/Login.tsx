@@ -35,8 +35,13 @@ export default function Login() {
         // Force reload to ensure all queries refetch
         window.location.href = "/";
       }, 100);
-    } catch (error) {
-      toast.error("อีเมลหรือรหัสผ่านไม่ถูกต้อง");
+    } catch (error: any) {
+      const msg = error?.message || "";
+      if (msg.includes("JWT_SECRET") || msg.includes("500")) {
+        toast.error("เกิดข้อผิดพลาดในระบบ กรุณาติดต่อผู้ดูแล (JWT_SECRET ไม่ได้ตั้งค่า)");
+      } else {
+        toast.error("อีเมลหรือรหัสผ่านไม่ถูกต้อง");
+      }
     }
   };
 

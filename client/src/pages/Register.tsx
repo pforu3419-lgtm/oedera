@@ -10,7 +10,7 @@ import { useAuth } from "@/_core/hooks/useAuth";
 
 export default function Register() {
   const [, setLocation] = useLocation();
-  const { refetch: refetchUser } = useAuth();
+  const { refresh } = useAuth();
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -56,7 +56,7 @@ export default function Register() {
       await new Promise(resolve => setTimeout(resolve, 500));
       
       // รีเฟรช user data เพื่อให้ login อัตโนมัติ
-      await refetchUser();
+      await refresh();
       
       // ไปที่หน้า home
       setLocation("/");

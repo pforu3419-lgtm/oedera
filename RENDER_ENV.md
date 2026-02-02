@@ -14,7 +14,7 @@
 | Key | Value | หมายเหตุ |
 |-----|-------|----------|
 | **JWT_SECRET** | สตริงลับอย่างน้อย 20 ตัว (เช่น `my-super-secret-jwt-key-2024`) | **จำเป็น** — ใช้เข้ารหัส session/cookie |
-| **MONGODB_URI** | `mongodb+srv://user:pass@cluster.mongodb.net/ordera?retryWrites=true&w=majority` | **จำเป็น** — จาก MongoDB Atlas |
+| **MONGODB_URI** | `mongodb+srv://user:pass@cluster.mongodb.net/ordera?retryWrites=true&w=majority` หรือ MONGODB_URI_STANDARD (ดู RENDER_MONGODB_SSL_FIX.md) | **จำเป็น** |
 
 5. กด **Save Changes**  
    - Render จะ **redeploy** ให้เองหลัง save
