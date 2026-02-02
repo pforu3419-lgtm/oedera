@@ -37,12 +37,15 @@ export async function getMongoDb() {
 
   try {
     console.log("[MongoDB] Connecting to MongoDB...");
-    client = new MongoClient(uri, {
+    const options: import("mongodb").MongoClientOptions = {
       serverSelectionTimeoutMS: 30000,
       connectTimeoutMS: 30000,
       socketTimeoutMS: 30000,
       autoSelectFamily: false,
-    });
+      tls: true,
+      tlsAllowInvalidCertificates: true, // Workaround for SSL alert 80 on Render+Atlas
+    };
+    client = new MongoClient(uri, options);
     await client.connect();
     // Extract database name from URI or use default
     const uriObj = new URL(uri);
