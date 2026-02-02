@@ -24,11 +24,17 @@ export async function getMongoDb() {
     }
   }
 
-  const uri = process.env.MONGODB_URI || "";
+  let uri = process.env.MONGODB_URI || "";
   if (!uri) {
     throw new Error("MONGODB_URI is not configured. Set it in env.runtime (local) or in your host's Environment (e.g. Render dashboard).");
   }
-  
+
+  // Force TLS for Atlas (fixes SSL alert 80 on Render with Node 20)
+  if (uri.includes("mongodb") && !uri.includes("tls=") && !uri.includes("ssl=")) {
+    const sep = uri.includes("?") ? "&" : "?";
+    uri = `${uri}${sep}tls=true`;
+  }
+
   try {
     console.log("[MongoDB] Connecting to MongoDB...");
     client = new MongoClient(uri, {
