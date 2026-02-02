@@ -41,6 +41,7 @@ export async function getMongoDb() {
       serverSelectionTimeoutMS: 30000,
       connectTimeoutMS: 30000,
       socketTimeoutMS: 30000,
+      autoSelectFamily: false,
     });
     await client.connect();
     // Extract database name from URI or use default
