@@ -29,6 +29,7 @@ import {
   Receipt,
   History,
   Package,
+  Palette,
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useLocation } from "wouter";
@@ -199,6 +200,13 @@ function MainLayout({
               </button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="w-48">
+              <DropdownMenuItem
+                onClick={() => setLocation("/theme")}
+                className="cursor-pointer"
+              >
+                <Palette className="mr-2 h-4 w-4" />
+                ธีมสี
+              </DropdownMenuItem>
               <DropdownMenuItem
                 onClick={() => setShowLogoutConfirm(true)}
                 className="cursor-pointer text-destructive focus:text-destructive"

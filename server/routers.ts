@@ -10,6 +10,7 @@ import { sdk } from "./_core/sdk";
 import { parse as parseCookie } from "cookie";
 import { SignJWT, jwtVerify } from "jose";
 import { ENV } from "./_core/env";
+import { storeSettingsRouter } from "./routes/storeSettings";
 
 const ADMIN_CODES_SESSION_COOKIE = "ordera_admin_codes_session";
 const ADMIN_CODES_SESSION_MAX_AGE = 60 * 60; // 1 ชม.
@@ -32,6 +33,7 @@ async function verifyAdminCodesSessionCookie(cookieHeader: string | string[] | u
 
 export const appRouter = router({
   system: systemRouter,
+  storeSettings: storeSettingsRouter,
   auth: router({
     me: publicProcedure
       .input(z.object({}).optional())

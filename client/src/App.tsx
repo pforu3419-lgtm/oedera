@@ -13,11 +13,22 @@ import Discounts from "./pages/Discounts";
 import Login from "./pages/Login";
 import Register from "./pages/Register";
 import Settings from "./pages/Settings";
+import StoreSettingsPage from "./pages/StoreSettingsPage";
+import ThemeSettingsPage from "./pages/ThemeSettingsPage";
 import TaxSystem from "./pages/TaxSystem";
 import Toppings from "./pages/Toppings";
 import JoinStore from "./pages/JoinStore";
 import EnterAdminCode from "./pages/EnterAdminCode";
 import CreateAdminCodes from "./pages/CreateAdminCodes";
+import { useAuth } from "@/_core/hooks/useAuth";
+import { trpc } from "@/lib/trpc";
+import { useEffect, useMemo, useState } from "react";
+import {
+  THEME_CHANGED_EVENT,
+  applyThemePrimaryColor,
+  readUserThemePreference,
+  type ThemeMode,
+} from "@/lib/theme";
 
 function Router() {
   return (
@@ -40,6 +51,8 @@ function Router() {
       <Route path={"/users"} component={Settings} />
       <Route path={"/receipt-templates"} component={Settings} />
       <Route path={"/settings"} component={Settings} />
+      <Route path={"/store-settings"} component={StoreSettingsPage} />
+      <Route path={"/theme"} component={ThemeSettingsPage} />
       <Route path={"/tax/company-profile"} component={TaxSystem} />
       <Route path={"/tax/invoices"} component={TaxSystem} />
       <Route path={"/tax/vat-reports"} component={TaxSystem} />
@@ -55,9 +68,49 @@ function Router() {
 }
 
 function App() {
+  const { user } = useAuth();
+  const { data: storeSettings } = trpc.storeSettings.get.useQuery(undefined, {
+    enabled: !!user?.storeId,
+  });
+
+  const [userPrefTick, setUserPrefTick] = useState(0);
+  useEffect(() => {
+    const onChange = () => setUserPrefTick((x) => x + 1);
+    window.addEventListener(THEME_CHANGED_EVENT, onChange as EventListener);
+    window.addEventListener("storage", onChange);
+    return () => {
+      window.removeEventListener(THEME_CHANGED_EVENT, onChange as EventListener);
+      window.removeEventListener("storage", onChange);
+    };
+  }, []);
+
+  const effective = useMemo(() => {
+    const userPref = readUserThemePreference();
+    const storePrimary = (storeSettings?.primaryColor || "").trim();
+    const storeMode = (storeSettings?.themeMode || "").trim() as ThemeMode | "";
+
+    const userEnabled = Boolean(userPref?.enabled);
+    const primaryColor = userEnabled
+      ? (userPref?.primaryColor || "").trim() || undefined
+      : storePrimary || undefined;
+    const themeMode: ThemeMode | undefined = userEnabled
+      ? userPref?.themeMode
+      : storeMode === "light" || storeMode === "dark"
+        ? storeMode
+        : undefined;
+
+    return { primaryColor, themeMode };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [storeSettings?.primaryColor, storeSettings?.themeMode, userPrefTick]);
+
+  useEffect(() => {
+    // Apply color theme (inline CSS vars) — ไม่กระทบ logic POS
+    applyThemePrimaryColor(effective.primaryColor);
+  }, [effective.primaryColor]);
+
   return (
     <ErrorBoundary>
-      <ThemeProvider defaultTheme="light">
+      <ThemeProvider defaultTheme="light" forcedTheme={effective.themeMode}>
         <TooltipProvider>
           <Toaster />
           <Router />

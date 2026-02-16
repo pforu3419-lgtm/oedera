@@ -10,7 +10,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { trpc } from "@/lib/trpc";
-import { Plus, Edit, Trash2, AlertCircle, Users, Printer, Settings as SettingsIcon, Store, Key, Shield, Building2, ArrowLeft } from "lucide-react";
+import { Plus, Edit, Trash2, AlertCircle, Users, Printer, Settings as SettingsIcon, Store, Key, Shield, Building2, ArrowLeft, SlidersHorizontal } from "lucide-react";
 import { toast } from "sonner";
 import { useLocation } from "wouter";
 import DashboardLayout from "@/components/DashboardLayout";
@@ -755,61 +755,72 @@ export default function SystemSettings() {
                   สร้างร้านและรหัสสำหรับให้พนักงานเข้าร้าน
                 </p>
               </div>
-              <Dialog open={isStoreOpen} onOpenChange={setIsStoreOpen}>
-                <DialogTrigger asChild>
-                  <Button onClick={() => {
-                    setStoreFormData({ storeCode: "", name: "" });
-                  }}>
-                    <Plus className="mr-2 h-4 w-4" />
-                    สร้างร้านใหม่
-                  </Button>
-                </DialogTrigger>
-                <DialogContent className="max-w-md">
-                  <DialogHeader>
-                    <DialogTitle>สร้างร้านใหม่</DialogTitle>
-                    <DialogDescription>
-                      กรอกข้อมูลร้านเพื่อสร้างห้องร้านใหม่
-                    </DialogDescription>
-                  </DialogHeader>
-                  <div className="space-y-4">
-                    <div>
-                      <Label htmlFor="storeCode">รหัสร้าน *</Label>
-                      <Input
-                        id="storeCode"
-                        placeholder="เช่น POS-UDON-2026"
-                        value={storeFormData.storeCode}
-                        onChange={(e) => setStoreFormData({ ...storeFormData, storeCode: e.target.value.toUpperCase() })}
-                        className="font-mono"
-                      />
-                      <p className="text-sm text-muted-foreground mt-1">
-                        รหัสนี้จะใช้สำหรับให้พนักงานเข้าร้าน
-                      </p>
-                    </div>
-                    <div>
-                      <Label htmlFor="storeName">ชื่อร้าน *</Label>
-                      <Input
-                        id="storeName"
-                        placeholder="เช่น ร้านมนัสเบอร์เกอร์"
-                        value={storeFormData.name}
-                        onChange={(e) => setStoreFormData({ ...storeFormData, name: e.target.value })}
-                      />
-                    </div>
-                    <Button
-                      onClick={() => {
-                        if (!storeFormData.storeCode.trim() || !storeFormData.name.trim()) {
-                          toast.error("กรุณากรอกข้อมูลให้ครบถ้วน");
-                          return;
-                        }
-                        createStoreMutation.mutate(storeFormData);
-                      }}
-                      disabled={createStoreMutation.isPending}
-                      className="w-full"
-                    >
-                      {createStoreMutation.isPending ? "กำลังสร้าง..." : "สร้างร้าน"}
+              <div className="flex gap-2">
+                <Button
+                  variant="outline"
+                  onClick={() => setLocation("/store-settings")}
+                  className="gap-2"
+                  title="ไปหน้าตั้งค่าร้าน (โมดูลใหม่)"
+                >
+                  <SlidersHorizontal className="h-4 w-4" />
+                  ตั้งค่าร้าน
+                </Button>
+                <Dialog open={isStoreOpen} onOpenChange={setIsStoreOpen}>
+                  <DialogTrigger asChild>
+                    <Button onClick={() => {
+                      setStoreFormData({ storeCode: "", name: "" });
+                    }}>
+                      <Plus className="mr-2 h-4 w-4" />
+                      สร้างร้านใหม่
                     </Button>
-                  </div>
-                </DialogContent>
-              </Dialog>
+                  </DialogTrigger>
+                  <DialogContent className="max-w-md">
+                    <DialogHeader>
+                      <DialogTitle>สร้างร้านใหม่</DialogTitle>
+                      <DialogDescription>
+                        กรอกข้อมูลร้านเพื่อสร้างห้องร้านใหม่
+                      </DialogDescription>
+                    </DialogHeader>
+                    <div className="space-y-4">
+                      <div>
+                        <Label htmlFor="storeCode">รหัสร้าน *</Label>
+                        <Input
+                          id="storeCode"
+                          placeholder="เช่น POS-UDON-2026"
+                          value={storeFormData.storeCode}
+                          onChange={(e) => setStoreFormData({ ...storeFormData, storeCode: e.target.value.toUpperCase() })}
+                          className="font-mono"
+                        />
+                        <p className="text-sm text-muted-foreground mt-1">
+                          รหัสนี้จะใช้สำหรับให้พนักงานเข้าร้าน
+                        </p>
+                      </div>
+                      <div>
+                        <Label htmlFor="storeName">ชื่อร้าน *</Label>
+                        <Input
+                          id="storeName"
+                          placeholder="เช่น ร้านมนัสเบอร์เกอร์"
+                          value={storeFormData.name}
+                          onChange={(e) => setStoreFormData({ ...storeFormData, name: e.target.value })}
+                        />
+                      </div>
+                      <Button
+                        onClick={() => {
+                          if (!storeFormData.storeCode.trim() || !storeFormData.name.trim()) {
+                            toast.error("กรุณากรอกข้อมูลให้ครบถ้วน");
+                            return;
+                          }
+                          createStoreMutation.mutate(storeFormData);
+                        }}
+                        disabled={createStoreMutation.isPending}
+                        className="w-full"
+                      >
+                        {createStoreMutation.isPending ? "กำลังสร้าง..." : "สร้างร้าน"}
+                      </Button>
+                    </div>
+                  </DialogContent>
+                </Dialog>
+              </div>
             </div>
 
             {storesLoading ? (

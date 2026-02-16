@@ -14,20 +14,29 @@ interface ThemeProviderProps {
   children: React.ReactNode;
   defaultTheme?: Theme;
   switchable?: boolean;
+  /** บังคับธีมจากภายนอก (เช่น จาก StoreSettings/ธีมส่วนตัว) */
+  forcedTheme?: Theme;
 }
 
 export function ThemeProvider({
   children,
   defaultTheme = "light",
   switchable = false,
+  forcedTheme,
 }: ThemeProviderProps) {
   const [theme, setTheme] = useState<Theme>(() => {
+    if (forcedTheme) return forcedTheme;
     if (switchable) {
       const stored = localStorage.getItem("theme");
       return (stored as Theme) || defaultTheme;
     }
     return defaultTheme;
   });
+
+  useEffect(() => {
+    if (!forcedTheme) return;
+    setTheme(forcedTheme);
+  }, [forcedTheme]);
 
   useEffect(() => {
     const root = document.documentElement;

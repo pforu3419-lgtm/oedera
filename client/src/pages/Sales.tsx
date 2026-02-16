@@ -14,6 +14,7 @@ import { Loader2, X, Search, Clock, DollarSign, User, History, Printer, Check } 
 import { toast } from "sonner";
 import { useLocation } from "wouter";
 import DashboardLayout from "@/components/DashboardLayout";
+import { useAuth } from "@/_core/hooks/useAuth";
 
 interface CartItem {
   productId: number;
@@ -109,6 +110,7 @@ function cartReducer(state: CartItem[], action: CartAction): CartItem[] {
 
 export default function Sales() {
   const [, setLocation] = useLocation();
+  const { user } = useAuth();
   const [cart, dispatchCart] = useReducer(cartReducer, []);
   // รับ event จาก POS Bottom Bar (ขาย, พักบิล, เรียกบิล, ตะกร้า) — หน้าขายใช้ POSLayout ห้าม Fullscreen
   useEffect(() => {
@@ -168,6 +170,13 @@ export default function Sales() {
     { enabled: false }
   );
   const receiptTemplateQuery = trpc.receiptTemplates.getDefault.useQuery();
+
+  // Store Settings (สำหรับแสดงชื่อร้าน/โลโก้บน header เท่านั้น)
+  const { data: storeSettings } = trpc.storeSettings.get.useQuery(undefined, {
+    enabled: !!user?.storeId,
+  });
+  const headerStoreName = (storeSettings?.storeName || "").trim() || "Ordera";
+  const headerLogoSrc = (storeSettings?.logoUrl || "").trim() || "/ordera-logo-white.svg";
 
   const categories = categoriesQuery.data || [];
   const products = productsQuery.data || [];
@@ -441,12 +450,15 @@ export default function Sales() {
           <div className="flex items-center gap-4">
             <div className="flex items-center gap-4">
               <img
-                src="/ordera-logo-white.svg"
-                alt="Ordera"
+                src={headerLogoSrc}
+                alt={headerStoreName}
                 className="h-12 w-12 drop-shadow-lg"
+                onError={(e) => {
+                  e.currentTarget.src = "/ordera-logo-white.svg";
+                }}
               />
               <span className="font-bold text-2xl tracking-tight text-sidebar-foreground drop-shadow-md whitespace-nowrap">
-                Ordera
+                {headerStoreName}
               </span>
             </div>
           </div>
