@@ -2,8 +2,9 @@ import { getMongoDb } from "./_core/mongo";
 import { ENV } from "./_core/env";
 import { hashPassword, verifyPassword } from "./_core/passwords";
 import { nanoid } from "nanoid";
+import { TRPCError } from "@trpc/server";
 
-type Role = "admin" | "manager" | "cashier" | "user";
+type Role = "superadmin" | "admin" | "manager" | "cashier" | "user";
 
 // ============ ADMIN CODES (รหัสแอดมิน) ============
 // 1 รหัส = 1 ร้าน ใช้ได้ครั้งเดียว เมื่อลูกค้าซื้อระบบจาก Ordera จะได้รหัสไปกรอกเพื่อสร้างร้านและเป็น Admin
@@ -233,9 +234,21 @@ export async function getUserByEmail(email: string) {
   const users = await getCollection<UserDoc>("users");
   const emailLower = email.toLowerCase();
   console.log("[getUserByEmail] Searching for email:", emailLower);
-  const result = await users.findOne({ email: emailLower });
+  const candidates = await users
+    .find({ email: emailLower })
+    .sort({ updatedAt: -1, id: -1 })
+    .toArray();
+  const result =
+    candidates.find((u) => !!u.passwordHash && !!u.passwordSalt) ?? candidates[0] ?? null;
   if (result) {
-    console.log("[getUserByEmail] Found user:", { id: result.id, email: result.email, name: result.name });
+    console.log("[getUserByEmail] Found user:", {
+      id: result.id,
+      email: result.email,
+      name: result.name,
+      role: result.role,
+      candidates: candidates.length,
+      hasPassword: !!result.passwordHash,
+    });
   } else {
     console.log("[getUserByEmail] No user found with email:", emailLower);
   }
@@ -402,20 +415,20 @@ export function verifyUserPassword(
 export async function updateUserPasswordByEmail(email: string, password: string) {
   const users = await getCollection<UserDoc>("users");
   const { hash, salt } = hashPassword(password);
-  const result = await users.updateOne(
+  const result = await users.updateMany(
     { email: email.toLowerCase() },
     { $set: { passwordHash: hash, passwordSalt: salt, updatedAt: new Date() } }
   );
-  return result.matchedCount > 0;
+  return (result.matchedCount ?? 0) > 0;
     }
 
 export async function updateUserRoleByEmail(email: string, role: Role) {
   const users = await getCollection<UserDoc>("users");
-  const result = await users.updateOne(
+  const result = await users.updateMany(
     { email: email.toLowerCase() },
     { $set: { role, updatedAt: new Date() } }
   );
-  return result.matchedCount > 0;
+  return (result.matchedCount ?? 0) > 0;
 }
 
 export async function getUsers(organizationId?: number | null) {
@@ -1497,6 +1510,27 @@ export async function getTransactionsByDateRange(startDate: Date, endDate: Date,
     .find(query)
     .sort({ createdAt: -1 })
     .toArray();
+}
+
+/**
+ * Return a Set of transactionIds that have at least 1 item row.
+ * Used to avoid counting "orphan" transactions (created then failed mid-flow).
+ */
+export async function getTransactionIdsWithAnyItems(transactionIds: number[]): Promise<Set<number>> {
+  const set = new Set<number>();
+  if (transactionIds.length === 0) return set;
+  const items = await getCollection<any>("transactionItems");
+  const rows = await items
+    .aggregate([
+      { $match: { transactionId: { $in: transactionIds } } },
+      { $group: { _id: "$transactionId" } },
+    ])
+    .toArray();
+  for (const r of rows) {
+    const id = Number(r?._id);
+    if (Number.isFinite(id)) set.add(id);
+  }
+  return set;
 }
 
 /** เก็บ productName ตอนสร้างบิล — รายละเอียดบิลใช้ order.items เท่านั้น ห้าม join products */
@@ -2754,14 +2788,324 @@ export async function deleteTopping(id: number) {
 }
 
 // ============ STORES (ห้องร้าน) ============
+export type StoreSubscriptionStatus = "pending" | "active" | "disabled" | "expired";
+export type SubscriptionPlan = "basic" | "premium";
+
 export type StoreDoc = {
   id: number;
   storeCode: string; // รหัสร้าน (ใช้เข้าห้อง) เช่น "POS-UDON-2026"
   name: string; // ชื่อร้าน
   ownerId: number; // หัวหน้าร้าน (user id)
+  // Subscription / Access control
+  subscriptionStatus?: StoreSubscriptionStatus; // default: "active" (backward compatible)
+  subscriptionPlan?: SubscriptionPlan; // default: "premium" (backward compatible)
+  requestedAt?: Date | null; // สมัครร้าน/ขอใช้งาน
+  activatedAt?: Date | null; // วันที่อนุมัติ/เปิดใช้งาน
+  expiresAt?: Date | null; // วันหมดอายุ (null = ไม่หมดอายุ)
+  disabledAt?: Date | null; // วันที่ปิดใช้งาน
+  disabledReason?: string | null; // เหตุผล (ถ้ามี)
+  expiredAt?: Date | null; // วันที่ถูก mark ว่าหมดอายุ
   createdAt: Date;
   updatedAt: Date;
 };
+
+export type StoreSubscriptionState = {
+  storeId: number;
+  status: StoreSubscriptionStatus;
+  expiresAt: Date | null;
+};
+
+function normalizeSubscriptionStatus(v: unknown): StoreSubscriptionStatus {
+  return v === "pending" || v === "active" || v === "disabled" || v === "expired" ? v : "active";
+}
+
+function normalizeSubscriptionPlan(v: unknown): SubscriptionPlan {
+  return v === "basic" || v === "premium" ? v : "premium";
+}
+
+function toDateOrNull(v: unknown): Date | null {
+  if (!v) return null;
+  const d = v instanceof Date ? v : new Date(String(v));
+  return Number.isFinite(d.getTime()) ? d : null;
+}
+
+async function getStoresByIdAndOwnerId(storeId: number, ownerId: number): Promise<StoreDoc[]> {
+  const stores = await getCollection<StoreDoc>("stores");
+  return stores.find({ id: storeId, ownerId }).toArray();
+}
+
+export async function getOrgSubscriptionPlan(ownerId: number): Promise<SubscriptionPlan> {
+  const stores = await getCollection<StoreDoc>("stores");
+  const rows = await stores.find({ ownerId }).project({ subscriptionPlan: 1 }).toArray();
+  // ถ้ามีอย่างน้อย 1 ร้านเป็น basic → ถือว่า org นี้เป็น basic (กันข้อมูลซ้ำ/ปน)
+  for (const r of rows) {
+    if (normalizeSubscriptionPlan((r as any)?.subscriptionPlan) === "basic") return "basic";
+  }
+  return "premium";
+}
+
+function computeStatusWithAutoExpire(
+  rawStatus: StoreSubscriptionStatus,
+  expiresAt: Date | null,
+): { status: StoreSubscriptionStatus; shouldMarkExpired: boolean } {
+  if (rawStatus === "active" && expiresAt && expiresAt.getTime() < Date.now()) {
+    return { status: "expired", shouldMarkExpired: true };
+  }
+  return { status: rawStatus, shouldMarkExpired: false };
+}
+
+export async function getStoreSubscriptionState(storeId: number): Promise<StoreSubscriptionState> {
+  const stores = await getCollection<StoreDoc>("stores");
+  const store = await stores.findOne({ id: storeId });
+  if (!store) {
+    return { storeId, status: "disabled", expiresAt: null };
+  }
+  const expiresAt = toDateOrNull((store as any).expiresAt);
+  const rawStatus = normalizeSubscriptionStatus((store as any).subscriptionStatus);
+
+  // Auto-lock when expired (requirement: "ล็อกบัญชีอัตโนมัติเมื่อหมดอายุ")
+  const computed = computeStatusWithAutoExpire(rawStatus, expiresAt);
+  if (computed.shouldMarkExpired) {
+    const now = new Date();
+    await stores.updateOne(
+      { id: storeId },
+      { $set: { subscriptionStatus: "expired", expiredAt: now, updatedAt: now } },
+    );
+    return { storeId, status: "expired", expiresAt };
+  }
+
+  return { storeId, status: computed.status, expiresAt };
+}
+
+export async function getStoreSubscriptionForOrgStore(
+  storeId: number,
+  ownerId: number,
+): Promise<StoreSubscriptionState & { subscriptionPlan: SubscriptionPlan }> {
+  const stores = await getCollection<StoreDoc>("stores");
+  const matches = await getStoresByIdAndOwnerId(storeId, ownerId);
+  const orgPlan = await getOrgSubscriptionPlan(ownerId);
+  if (matches.length === 0) {
+    return { storeId, status: "disabled", expiresAt: null, subscriptionPlan: orgPlan };
+  }
+  // เลือก record ล่าสุด (กัน id ซ้ำหลายแถว)
+  const store = matches.slice().sort((a: any, b: any) => {
+    const at = (a?.updatedAt ? new Date(a.updatedAt).getTime() : 0) || 0;
+    const bt = (b?.updatedAt ? new Date(b.updatedAt).getTime() : 0) || 0;
+    return bt - at;
+  })[0] as any;
+  const expiresAt = toDateOrNull(store.expiresAt);
+  const rawStatus = normalizeSubscriptionStatus(store.subscriptionStatus);
+
+  const computed = computeStatusWithAutoExpire(rawStatus, expiresAt);
+  if (computed.shouldMarkExpired) {
+    const now = new Date();
+    const code = String(store.storeCode || "").trim();
+    if (code) {
+      await stores.updateOne(
+        { storeCode: code },
+        { $set: { subscriptionStatus: "expired", expiredAt: now, updatedAt: now } },
+      );
+    }
+  }
+
+  return { storeId, status: computed.status, expiresAt, subscriptionPlan: orgPlan };
+}
+
+export async function updateStoreSubscription(
+  storeId: number,
+  patch: Partial<{
+    subscriptionStatus: StoreSubscriptionStatus;
+    expiresAt: Date | null;
+    disabledReason: string | null;
+  }>,
+) {
+  const stores = await getCollection<StoreDoc>("stores");
+  const now = new Date();
+  const update: Partial<StoreDoc> = { updatedAt: now };
+
+  if (patch.subscriptionStatus !== undefined) {
+    update.subscriptionStatus = patch.subscriptionStatus;
+    if (patch.subscriptionStatus === "active") {
+      update.activatedAt = now;
+      update.disabledAt = null;
+      update.disabledReason = null;
+      update.expiredAt = null;
+    }
+    if (patch.subscriptionStatus === "disabled") {
+      update.disabledAt = now;
+      update.disabledReason = patch.disabledReason ?? null;
+    }
+    if (patch.subscriptionStatus === "expired") {
+      update.expiredAt = now;
+    }
+  }
+
+  if (patch.expiresAt !== undefined) {
+    update.expiresAt = patch.expiresAt;
+    // ถ้าตั้งวันหมดอายุย้อนหลัง => mark expired ทันที
+    if (patch.expiresAt && patch.expiresAt.getTime() < Date.now()) {
+      update.subscriptionStatus = "expired";
+      update.expiredAt = now;
+    }
+  }
+
+  if (patch.disabledReason !== undefined) {
+    update.disabledReason = patch.disabledReason;
+  }
+
+  await stores.updateOne({ id: storeId }, { $set: update });
+  return stores.findOne({ id: storeId });
+}
+
+export async function updateStoreSubscriptionByCode(
+  storeCode: string,
+  patch: Partial<{
+    subscriptionStatus: StoreSubscriptionStatus;
+    subscriptionPlan: SubscriptionPlan;
+    expiresAt: Date | null;
+    disabledReason: string | null;
+  }>,
+) {
+  const stores = await getCollection<StoreDoc>("stores");
+  const code = storeCode.trim();
+  const existing = await stores.findOne({ storeCode: code });
+  if (!existing) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: `ไม่พบร้านจากโค้ด: ${code}` });
+  }
+
+  // IMPORTANT: ห้ามอิง id เพราะข้อมูลจริงอาจมี id ซ้ำ → จะอัปเดตผิดร้าน
+  const now = new Date();
+  const update: Partial<StoreDoc> = { updatedAt: now };
+
+  if (patch.subscriptionStatus !== undefined) {
+    update.subscriptionStatus = patch.subscriptionStatus;
+    if (patch.subscriptionStatus === "active") {
+      update.activatedAt = now;
+      update.disabledAt = null;
+      update.disabledReason = null;
+      update.expiredAt = null;
+    }
+    if (patch.subscriptionStatus === "disabled") {
+      update.disabledAt = now;
+      update.disabledReason = patch.disabledReason ?? null;
+    }
+    if (patch.subscriptionStatus === "expired") {
+      update.expiredAt = now;
+    }
+  }
+
+  if (patch.expiresAt !== undefined) {
+    update.expiresAt = patch.expiresAt;
+    if (patch.expiresAt && patch.expiresAt.getTime() < Date.now()) {
+      update.subscriptionStatus = "expired";
+      update.expiredAt = now;
+    }
+  }
+
+  if (patch.disabledReason !== undefined) {
+    update.disabledReason = patch.disabledReason;
+  }
+
+  if (patch.subscriptionPlan !== undefined) {
+    update.subscriptionPlan = patch.subscriptionPlan;
+  }
+
+  await stores.updateOne({ storeCode: code }, { $set: update });
+  return stores.findOne({ storeCode: code });
+}
+
+export async function listAllStoresForSuperAdmin() {
+  const stores = await getCollection<StoreDoc>("stores");
+  const rows = await stores.find({}).sort({ createdAt: -1 }).toArray();
+
+  // คำนวณสถานะจาก doc โดยตรง (ไม่อิง id) + auto-expire แบบอัปเดตด้วย storeCode
+  const nowMs = Date.now();
+  const out: Array<any> = [];
+  for (const s of rows) {
+    const expiresAt = toDateOrNull((s as any).expiresAt);
+    const rawStatus = normalizeSubscriptionStatus((s as any).subscriptionStatus);
+    const plan = normalizeSubscriptionPlan((s as any).subscriptionPlan);
+
+    let computedStatus: StoreSubscriptionStatus = rawStatus;
+    if (rawStatus === "active" && expiresAt && expiresAt.getTime() < nowMs) {
+      computedStatus = "expired";
+      const now = new Date();
+      const code = String((s as any).storeCode || "").trim();
+      if (code) {
+        await stores.updateOne(
+          { storeCode: code },
+          { $set: { subscriptionStatus: "expired", expiredAt: now, updatedAt: now } },
+        );
+      }
+    }
+
+    out.push({
+      ...s,
+      computedStatus,
+      computedExpiresAt: expiresAt,
+      subscriptionPlan: plan,
+    });
+  }
+  return out;
+}
+
+export async function assertCanCreateStaffUserForOrg(ownerId: number) {
+  const plan = await getOrgSubscriptionPlan(ownerId);
+  if (plan !== "basic") return;
+  const users = await getCollection<UserDoc>("users");
+  // NOTE: storeId ใน DB อาจซ้ำข้ามร้าน → ต้องนับแบบผูกกับ ownerId (organization)
+  const count = await users.countDocuments({
+    $or: [
+      { organizationId: ownerId }, // staff ใน org นี้
+      { id: ownerId, organizationId: null }, // owner ของ org นี้
+    ],
+  } as any);
+  if (count >= 1) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "แพ็กเกจ Basic สร้างผู้ใช้งานได้ 1 บัญชีเท่านั้น (ไม่สามารถเพิ่มพนักงานได้)",
+    });
+  }
+}
+
+export async function assertCanJoinStoreByInvite(storeId: number, ownerId: number) {
+  const plan = await getOrgSubscriptionPlan(ownerId);
+  if (plan !== "basic") return;
+  throw new TRPCError({
+    code: "FORBIDDEN",
+    message: "แพ็กเกจ Basic ไม่รองรับการเพิ่มพนักงาน/การเข้าร้านด้วยรหัส",
+  });
+}
+
+export async function assertCanManageStoreInvites(ownerId: number) {
+  const plan = await getOrgSubscriptionPlan(ownerId);
+  if (plan !== "basic") return;
+  throw new TRPCError({
+    code: "FORBIDDEN",
+    message: "แพ็กเกจ Basic ไม่รองรับการสร้าง/จัดการรหัสเข้าร้าน (พนักงาน)",
+  });
+}
+
+/** POS guard: Login ได้ แต่กันการใช้งานเมื่อร้าน pending/expired/disabled */
+export async function assertPosAccessForUser(user: { storeId?: number | null } | null) {
+  const storeId = user?.storeId ?? null;
+  if (!storeId) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "กรุณาเชื่อมต่อร้านก่อน" });
+  }
+  const state = await getStoreSubscriptionState(Number(storeId));
+  if (state.status === "active") return;
+  if (state.status === "pending") {
+    throw new TRPCError({ code: "FORBIDDEN", message: "บัญชีของคุณอยู่ระหว่างรอการอนุมัติ (pending)" });
+  }
+  if (state.status === "disabled") {
+    throw new TRPCError({ code: "FORBIDDEN", message: "บัญชีของคุณถูกปิดใช้งาน (disabled)" });
+  }
+  // expired
+  throw new TRPCError({
+    code: "FORBIDDEN",
+    message: "บัญชีของคุณหมดอายุ กรุณาต่ออายุเพื่อใช้งานต่อ",
+  });
+}
 
 export type StoreInviteDoc = {
   id: number;
@@ -2778,6 +3122,9 @@ export async function createStore(data: {
   storeCode: string;
   name: string;
   ownerId: number;
+  subscriptionStatus?: StoreSubscriptionStatus;
+  subscriptionPlan?: SubscriptionPlan;
+  requestedAt?: Date | null;
 }) {
   const stores = await getCollection<StoreDoc>("stores");
   
@@ -2794,6 +3141,14 @@ export async function createStore(data: {
     storeCode: data.storeCode,
     name: data.name,
     ownerId: data.ownerId,
+    subscriptionStatus: data.subscriptionStatus ?? "active",
+    subscriptionPlan: data.subscriptionPlan ?? "premium",
+    requestedAt: data.requestedAt ?? null,
+    activatedAt: (data.subscriptionStatus ?? "active") === "active" ? now : null,
+    expiresAt: null,
+    disabledAt: null,
+    disabledReason: null,
+    expiredAt: null,
     createdAt: now,
     updatedAt: now,
   };

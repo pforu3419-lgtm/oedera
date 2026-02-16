@@ -4,7 +4,7 @@ import NotFound from "@/pages/NotFound";
 import Home from "@/pages/Home";
 import Sales from "@/pages/Sales";
 import Products from "@/pages/Products";
-import { Route, Switch, Redirect } from "wouter";
+import { Route, Switch } from "wouter";
 import ErrorBoundary from "./components/ErrorBoundary";
 import { ThemeProvider } from "./contexts/ThemeContext";
 import Customers from "./pages/Customers";
@@ -12,14 +12,17 @@ import Reports from "./pages/Reports";
 import Discounts from "./pages/Discounts";
 import Login from "./pages/Login";
 import Register from "./pages/Register";
+import StoreSignup from "./pages/StoreSignup";
 import Settings from "./pages/Settings";
 import StoreSettingsPage from "./pages/StoreSettingsPage";
 import ThemeSettingsPage from "./pages/ThemeSettingsPage";
 import TaxSystem from "./pages/TaxSystem";
 import Toppings from "./pages/Toppings";
 import JoinStore from "./pages/JoinStore";
-import EnterAdminCode from "./pages/EnterAdminCode";
-import CreateAdminCodes from "./pages/CreateAdminCodes";
+import SuperAdminDashboard from "./pages/SuperAdminDashboard";
+import SuperAdminLogin from "./pages/SuperAdminLogin";
+import MemberSignupPage from "./pages/MemberSignupPage";
+import MemberQrPage from "./pages/MemberQrPage";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { trpc } from "@/lib/trpc";
 import { useEffect, useMemo, useState } from "react";
@@ -36,11 +39,8 @@ function Router() {
       <Route path="/" component={Home} />
       <Route path={"/login"} component={Login} />
       <Route path={"/register"} component={Register} />
-      <Route path={"/enter-admin-code"} component={EnterAdminCode} />
-      <Route path="/create-admin-code">
-        <Redirect to="/create-admin-codes" />
-      </Route>
-      <Route path={"/create-admin-codes"} component={CreateAdminCodes} />
+      <Route path={"/signup-store"} component={StoreSignup} />
+      <Route path={"/m/:storeId"} component={MemberSignupPage} />
       <Route path={"/sales"} component={Sales} />
       <Route path={"/products"} component={Products} />
       <Route path={"/inventory"} component={Products} />
@@ -53,6 +53,9 @@ function Router() {
       <Route path={"/settings"} component={Settings} />
       <Route path={"/store-settings"} component={StoreSettingsPage} />
       <Route path={"/theme"} component={ThemeSettingsPage} />
+      <Route path={"/super-admin/login"} component={SuperAdminLogin} />
+      <Route path={"/super-admin"} component={SuperAdminDashboard} />
+      <Route path={"/member-qr"} component={MemberQrPage} />
       <Route path={"/tax/company-profile"} component={TaxSystem} />
       <Route path={"/tax/invoices"} component={TaxSystem} />
       <Route path={"/tax/vat-reports"} component={TaxSystem} />

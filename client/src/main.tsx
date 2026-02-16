@@ -18,6 +18,12 @@ const redirectToLoginIfUnauthorized = (error: unknown) => {
 
   if (!isUnauthorized) return;
 
+  const pathname = window.location.pathname || "";
+  if (pathname.startsWith("/super-admin")) {
+    window.location.href = "/super-admin/login";
+    return;
+  }
+
   const loginUrl = getLoginUrl();
   if (!loginUrl) return;
   window.location.href = loginUrl;
@@ -55,7 +61,8 @@ const trpcClient = trpc.createClient({
             params.get("login") === "1" ||
             pathname === "/login" ||
             pathname === "/register" ||
-            pathname === "/create-admin-codes"
+            pathname === "/super-admin" ||
+            pathname === "/super-admin/login"
           ) {
             headers["x-dev-guest"] = "off";
           }

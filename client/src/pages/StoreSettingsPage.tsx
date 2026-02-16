@@ -138,7 +138,7 @@ export default function StoreSettingsPage() {
               <CardDescription>กรุณาเชื่อมต่อร้านก่อน จึงจะตั้งค่าร้านได้</CardDescription>
             </CardHeader>
             <CardContent>
-              <Button onClick={() => setLocation("/enter-admin-code")}>เข้าร้านด้วยรหัสแอดมิน</Button>
+              <Button onClick={() => setLocation("/signup-store")}>สมัครร้าน</Button>
             </CardContent>
           </Card>
         ) : (

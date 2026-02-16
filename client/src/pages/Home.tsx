@@ -6,8 +6,8 @@ import {
   Package,
   Users,
   BarChart3,
-  KeyRound,
   Settings as SettingsIcon,
+  Store,
 } from "lucide-react";
 import { useLocation } from "wouter";
 import { trpc } from "@/lib/trpc";
@@ -21,27 +21,27 @@ export default function Home() {
     enabled: !!user?.storeId,
   });
 
-  // ผู้ใช้ที่ยังไม่มีร้าน: แสดง CTA กรอกรหัสแอดมิน
+  // ผู้ใช้ที่ยังไม่มีร้าน: แสดง CTA สมัครร้าน
   if (user && !user.storeId) {
     return (
       <DashboardLayout>
         <div className="flex flex-col items-center justify-center py-16 px-4">
           <div className="max-w-md w-full text-center space-y-6">
             <div className="w-20 h-20 mx-auto rounded-full bg-amber-100 flex items-center justify-center">
-              <KeyRound className="h-10 w-10 text-amber-600" />
+              <Store className="h-10 w-10 text-amber-600" />
             </div>
             <div>
               <h2 className="text-2xl font-bold text-gray-900">ยังไม่ได้เชื่อมต่อร้านค้า</h2>
               <p className="mt-2 text-gray-600">
-                กรอกรหัสแอดมินที่ได้รับจาก Ordera เพื่อสร้างร้านและเริ่มใช้งานระบบ
+                สมัครร้านเพื่อเริ่มใช้งานระบบ (สถานะจะเป็น pending และรอผู้ดูแลอนุมัติ)
               </p>
             </div>
             <Button
               size="lg"
               className="w-full max-w-xs mx-auto"
-              onClick={() => setLocation("/enter-admin-code")}
+              onClick={() => setLocation("/signup-store")}
             >
-              เข้าร้านด้วยรหัสแอดมิน
+              สมัครร้าน
             </Button>
           </div>
         </div>

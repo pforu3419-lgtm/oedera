@@ -1,7 +1,16 @@
 import { COOKIE_NAME, ONE_YEAR_MS } from "@shared/const";
 import { getSessionCookieOptions } from "./_core/cookies";
 import { systemRouter } from "./_core/systemRouter";
-import { publicProcedure, protectedProcedure, router, adminProcedure, managerProcedure, reportsProcedure } from "./_core/trpc";
+import {
+  publicProcedure,
+  protectedProcedure,
+  router,
+  adminProcedure,
+  managerProcedure,
+  reportsProcedure,
+  posProcedure,
+  superAdminProcedure,
+} from "./_core/trpc";
 import { z } from "zod";
 import * as db from "./db";
 import { TRPCError } from "@trpc/server";
@@ -11,9 +20,25 @@ import { parse as parseCookie } from "cookie";
 import { SignJWT, jwtVerify } from "jose";
 import { ENV } from "./_core/env";
 import { storeSettingsRouter } from "./routes/storeSettings";
+import { deleteStoreAndOrgDataByStoreCode } from "./routes/superAdminDelete";
+import { memberSignupRouter } from "./routes/memberSignup";
 
 const ADMIN_CODES_SESSION_COOKIE = "ordera_admin_codes_session";
 const ADMIN_CODES_SESSION_MAX_AGE = 60 * 60; // 1 ชม.
+
+function isSuperAdminEmail(email: string | null | undefined): boolean {
+  const raw = (ENV.superAdminEmails || "").trim();
+  if (!raw) return false;
+  const e = (email || "").trim().toLowerCase();
+  if (!e) return false;
+  const set = new Set(
+    raw
+      .split(",")
+      .map((s) => s.trim().toLowerCase())
+      .filter(Boolean),
+  );
+  return set.has(e);
+}
 
 async function verifyAdminCodesSessionCookie(cookieHeader: string | string[] | undefined): Promise<boolean> {
   const h = Array.isArray(cookieHeader) ? cookieHeader[0] : cookieHeader;
@@ -34,6 +59,7 @@ async function verifyAdminCodesSessionCookie(cookieHeader: string | string[] | u
 export const appRouter = router({
   system: systemRouter,
   storeSettings: storeSettingsRouter,
+  memberSignup: memberSignupRouter,
   auth: router({
     me: publicProcedure
       .input(z.object({}).optional())
@@ -91,9 +117,10 @@ export const appRouter = router({
           // ✅ สร้าง session token และ login อัตโนมัติ
           console.log("[Register] Creating session token...");
           try {
+            const effectiveRole = newUser.role === "superadmin" || isSuperAdminEmail(newUser.email) ? "superadmin" : newUser.role;
             const sessionToken = await sdk.createSessionToken(newUser.openId, {
               name: newUser.name || "",
-              role: newUser.role,
+              role: effectiveRole,
             });
             console.log("[Register] ✅ Session token created");
           
@@ -127,6 +154,77 @@ export const appRouter = router({
             message: `เกิดข้อผิดพลาดในการสมัครสมาชิก: ${errorMessage}`,
             cause: error,
           });
+        }
+      }),
+    // สมัครร้าน (owner) — สร้างร้านสถานะ pending (ยังเข้า POS ไม่ได้ จนกว่า Super Admin จะเปิดใช้งาน)
+    registerStore: publicProcedure
+      .input(
+        z.object({
+          ownerName: z.string().min(1, "ชื่อผู้ใช้ต้องไม่ว่าง"),
+          email: z.string().email("รูปแบบอีเมลไม่ถูกต้อง"),
+          password: z.string().min(6, "รหัสผ่านต้องมีอย่างน้อย 6 ตัวอักษร"),
+          storeName: z.string().min(1, "ชื่อร้านต้องไม่ว่าง").max(200),
+          phone: z.string().max(50).optional(),
+          address: z.string().max(500).optional(),
+        }),
+      )
+      .mutation(async ({ input, ctx }) => {
+        try {
+          const emailLower = input.email.toLowerCase();
+          const existing = await db.getUserByEmail(emailLower);
+          if (existing) {
+            throw new TRPCError({ code: "CONFLICT", message: "อีเมลนี้ถูกใช้งานแล้ว" });
+          }
+
+          const owner = await db.createInternalUser({
+            name: input.ownerName,
+            email: emailLower,
+            password: input.password,
+            role: "admin",
+          });
+
+          const now = new Date();
+          const store = await db.createStore({
+            storeCode: "STORE-" + Date.now(),
+            name: input.storeName.trim(),
+            ownerId: owner.id,
+            subscriptionStatus: "pending",
+            subscriptionPlan: "basic",
+            requestedAt: now,
+          });
+
+          // ผูกผู้ใช้กับร้าน (owner/admin) — organizationId = null (owner)
+          const users = await db.getCollectionAsync<db.UserDoc>("users");
+          await users.updateOne(
+            { id: owner.id },
+            { $set: { storeId: store.id, role: "admin", organizationId: null, updatedAt: now } },
+          );
+
+          // Login อัตโนมัติ
+          try {
+            const sessionToken = await sdk.createSessionToken(owner.openId, {
+              name: owner.name || "",
+              role: "admin",
+            });
+            const cookieOptions = getSessionCookieOptions(ctx.req);
+            ctx.res.cookie(COOKIE_NAME, sessionToken, {
+              ...cookieOptions,
+              maxAge: ONE_YEAR_MS,
+            });
+          } catch (tokenError) {
+            console.error("[RegisterStore] Failed to create session token:", tokenError);
+          }
+
+          return {
+            success: true,
+            message: "สมัครร้านสำเร็จ (สถานะ: pending) รอการอนุมัติจากผู้ดูแลระบบ",
+            storeId: store.id,
+            status: "pending",
+          } as const;
+        } catch (error) {
+          if (error instanceof TRPCError) throw error;
+          const msg = error instanceof Error ? error.message : String(error);
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: `สมัครร้านไม่สำเร็จ: ${msg}` });
         }
       }),
     login: publicProcedure
@@ -165,9 +263,10 @@ export const appRouter = router({
         }
         console.log("[Login] Login successful for:", input.email);
 
+        const effectiveRole = user.role === "superadmin" || isSuperAdminEmail(user.email) ? "superadmin" : user.role;
         const sessionToken = await sdk.createSessionToken(user.openId, {
           name: user.name || "",
-          role: user.role, // ฝัง role ใน token
+          role: effectiveRole, // ฝัง role ใน token
         });
         const cookieOptions = getSessionCookieOptions(ctx.req);
         ctx.res.cookie(COOKIE_NAME, sessionToken, {
@@ -180,7 +279,7 @@ export const appRouter = router({
         });
         return { 
           success: true,
-          role: user.role, // ส่ง role กลับไปใน response
+          role: effectiveRole, // ส่ง role กลับไปใน response
           name: user.name,
           email: user.email,
         } as const;
@@ -195,8 +294,10 @@ export const appRouter = router({
     redeemAdminCode: protectedProcedure
       .input(z.object({ code: z.string().min(1, "กรุณากรอกรหัสแอดมิน") }))
       .mutation(async ({ input, ctx }) => {
-        const { store } = await db.redeemAdminCode(input.code.trim(), ctx.user!.id);
-        return { success: true, store, message: "เชื่อมต่อร้านสำเร็จ คุณเป็น Admin ประจำร้านแล้ว" };
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "ระบบเข้าร้านด้วยรหัสแอดมินถูกปิดใช้งาน (กรุณาใช้การสมัครร้านแทน)",
+        });
       }),
   }),
 
@@ -204,52 +305,118 @@ export const appRouter = router({
   adminCodes: router({
     // ตรวจสอบว่าผ่านรหัสหลักแล้ว (มี session)
     checkAccess: publicProcedure.query(async ({ ctx }) => {
-      const ok = await verifyAdminCodesSessionCookie(ctx.req.headers.cookie);
-      return { allowed: ok };
+      return { allowed: false };
     }),
     // กรอกรหัสหลัก เพื่อเข้าสู่ระบบสร้างรหัสแอดมิน (ตั้ง ORDERA_MASTER_CODE ใน env.runtime)
     verifyAccess: publicProcedure
       .input(z.object({ code: z.string().min(1, "กรุณากรอกรหัส") }))
       .mutation(async ({ input, ctx }) => {
-        const master = await db.getMasterCodeForAdminCodesForVerify();
-        if (!master) {
-          throw new TRPCError({ code: "FORBIDDEN", message: "ระบบสร้างรหัสแอดมินปิดใช้งาน" });
-        }
-        if (input.code.trim() !== master) {
-          throw new TRPCError({ code: "UNAUTHORIZED", message: "รหัสไม่ถูกต้อง" });
-        }
-        const secret = new TextEncoder().encode(ENV.cookieSecret);
-        const token = await new SignJWT({ purpose: "admin-codes" })
-          .setProtectedHeader({ alg: "HS256", typ: "JWT" })
-          .setExpirationTime(Math.floor(Date.now() / 1000) + ADMIN_CODES_SESSION_MAX_AGE)
-          .sign(secret);
-        const cookieOptions = getSessionCookieOptions(ctx.req);
-        ctx.res.cookie(ADMIN_CODES_SESSION_COOKIE, token, {
-          ...cookieOptions,
-          maxAge: ADMIN_CODES_SESSION_MAX_AGE,
-        });
-        return { success: true, message: "เข้าสู่ระบบสร้างรหัสแอดมินแล้ว" };
+        throw new TRPCError({ code: "FORBIDDEN", message: "ระบบสร้างรหัสแอดมินถูกปิดใช้งาน" });
       }),
     // สร้างรหัสแอดมิน (ต้อง verifyAccess ผ่านก่อน)
     createCode: publicProcedure.mutation(async ({ ctx }) => {
-      const ok = await verifyAdminCodesSessionCookie(ctx.req.headers.cookie);
-      if (!ok) {
-        throw new TRPCError({ code: "UNAUTHORIZED", message: "กรุณากรอกรหัสเพื่อเข้าสู่ระบบก่อน" });
-      }
-      const ac = await db.createAdminCode();
-      return { code: ac.code };
+      throw new TRPCError({ code: "FORBIDDEN", message: "ระบบสร้างรหัสแอดมินถูกปิดใช้งาน" });
     }),
     // ออกจากระบบสร้างรหัส (ล้าง session)
     clearAccess: publicProcedure.mutation(({ ctx }) => {
-      const cookieOptions = getSessionCookieOptions(ctx.req);
-      ctx.res.clearCookie(ADMIN_CODES_SESSION_COOKIE, { ...cookieOptions, maxAge: -1 });
       return { success: true };
+    }),
+  }),
+
+  // ============ SUBSCRIPTION / STORE ACCESS ============
+  subscription: router({
+    my: protectedProcedure.query(async ({ ctx }) => {
+      const storeId = ctx.user?.storeId ?? null;
+      if (!storeId) {
+        return { storeId: null, status: "disabled", expiresAt: null, subscriptionPlan: "premium" } as const;
+      }
+      const ownerId = db.getUserOrganizationId(ctx.user);
+      if (!ownerId) {
+        return { storeId: Number(storeId), status: "disabled", expiresAt: null, subscriptionPlan: "premium" } as const;
+      }
+      return db.getStoreSubscriptionForOrgStore(Number(storeId), Number(ownerId));
+    }),
+  }),
+
+  // ============ SUPER ADMIN (คุมร้านทั้งหมด + Subscription) ============
+  superAdmin: router({
+    // ยืนยันรหัสผ่านทุกครั้งก่อนเข้าแดชบอร์ด (ไม่เก็บ/ไม่จำรหัส)
+    verifyPassword: superAdminProcedure
+      .input(z.object({ password: z.string().min(6).max(200) }))
+      .mutation(async ({ input, ctx }) => {
+        const openId = (ctx.user as any)?.openId;
+        if (!openId) {
+          throw new TRPCError({ code: "UNAUTHORIZED", message: "กรุณาเข้าสู่ระบบใหม่" });
+        }
+        const row = await db.getUserByOpenId(String(openId));
+        if (!row) {
+          throw new TRPCError({ code: "UNAUTHORIZED", message: "กรุณาเข้าสู่ระบบใหม่" });
+        }
+        const ok = db.verifyUserPassword(row, input.password);
+        if (!ok) {
+          throw new TRPCError({ code: "UNAUTHORIZED", message: "รหัสผ่านไม่ถูกต้อง" });
+        }
+        return { success: true } as const;
+      }),
+    stores: router({
+      list: superAdminProcedure.query(async () => {
+        // NOTE: หลีกเลี่ยงการคำนวณด้วย store.id เพราะในข้อมูลจริงอาจมี id ซ้ำ
+        // ให้คำนวณสถานะจาก doc + storeCode (ซึ่งมนุษย์ใช้อ้างอิงจริง)
+        return db.listAllStoresForSuperAdmin();
+      }),
+      update: superAdminProcedure
+        .input(
+          z.object({
+            storeCode: z.string().min(1),
+            subscriptionStatus: z.enum(["pending", "active", "disabled", "expired"]).optional(),
+            subscriptionPlan: z.enum(["basic", "premium"]).optional(),
+            expiresAt: z.union([z.string(), z.null()]).optional(), // accept ISO or YYYY-MM-DD or null
+            disabledReason: z.union([z.string().max(500), z.null()]).optional(),
+          }),
+        )
+        .mutation(async ({ input }) => {
+          const expiresAt =
+            input.expiresAt === undefined
+              ? undefined
+              : input.expiresAt === null || String(input.expiresAt).trim() === ""
+                ? null
+                : new Date(String(input.expiresAt));
+
+          if (expiresAt instanceof Date && !Number.isFinite(expiresAt.getTime())) {
+            throw new TRPCError({ code: "BAD_REQUEST", message: "รูปแบบวันหมดอายุไม่ถูกต้อง" });
+          }
+
+          return db.updateStoreSubscriptionByCode(input.storeCode, {
+            subscriptionStatus: input.subscriptionStatus,
+            subscriptionPlan: input.subscriptionPlan,
+            expiresAt: expiresAt as Date | null | undefined,
+            disabledReason: input.disabledReason ?? undefined,
+          });
+        }),
+      delete: superAdminProcedure
+        .input(
+          z.object({
+            storeCode: z.string().min(1),
+            confirm: z.string().min(1),
+          }),
+        )
+        .mutation(async ({ input }) => {
+          const code = input.storeCode.trim();
+          const expected = `DELETE ${code}`;
+          if (input.confirm.trim() !== expected) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: `กรุณาพิมพ์ยืนยันให้ตรง: ${expected}`,
+            });
+          }
+          return deleteStoreAndOrgDataByStoreCode(code);
+        }),
     }),
   }),
 
   // ============ CATEGORIES ============
   categories: router({
-    list: protectedProcedure.query(async ({ ctx }) => {
+    list: posProcedure.query(async ({ ctx }) => {
       const orgId = db.getUserOrganizationId(ctx.user);
       return db.getCategories(orgId);
     }),
@@ -322,7 +489,7 @@ export const appRouter = router({
 
   // ============ PRODUCTS ============
   products: router({
-    list: protectedProcedure
+    list: posProcedure
       .input(
         z.object({
           categoryId: z.number().optional(),
@@ -349,7 +516,7 @@ export const appRouter = router({
       }),
 
     /** สแกน QR/Barcode: คืน product หรือ scale (productCode|weight|totalPrice) */
-    lookupByScan: protectedProcedure
+    lookupByScan: posProcedure
       .input(z.object({ code: z.string() }))
       .query(async ({ input, ctx }) => {
         const orgId = db.getUserOrganizationId(ctx.user);
@@ -499,7 +666,7 @@ export const appRouter = router({
 
   // ============ CUSTOMERS ============
   customers: router({
-    list: protectedProcedure
+    list: posProcedure
       .input(
         z.object({
           search: z.string().optional(),
@@ -603,7 +770,7 @@ export const appRouter = router({
 
   // ============ TRANSACTIONS ============
   transactions: router({
-    create: protectedProcedure
+    create: posProcedure
       .input(
         z.object({
           transactionNumber: z.string(),
@@ -651,25 +818,6 @@ export const appRouter = router({
           }
         }
 
-        // 1. สร้างบิล 2. ชำระเงินสำเร็จ (transaction = บันทึกบิล) 3. ตัดสต็อก — ห้ามตัดตอนเพิ่มเข้าตะกร้า/ยิงบาร์โค้ด
-        const cashierName = ctx.user.name || `User #${ctx.user.id}`;
-        const transaction = await db.createTransaction({
-          transactionNumber: input.transactionNumber,
-          cashierId: ctx.user.id,
-          cashierName: cashierName,
-          customerId: input.customerId,
-          subtotal: input.subtotal,
-          tax: input.tax,
-          discount: input.discount,
-          total: input.total,
-          paymentMethod: input.paymentMethod,
-          notes: input.notes,
-          organizationId: orgId,
-        });
-
-        const transactionId = (transaction as any).id;
-        console.log("[transactions.create] Transaction created with ID:", transactionId);
-
         // ตัดสต็อกเฉพาะสินค้าที่อยู่ในบิล, ใช้ productId เท่านั้น, ห้ามใช้ storeId/sku รวม
         // 1 order item = 1 การตัดสต็อก — ไม่รวมรายการ; แต่ต้องตรวจสต็อกรวมต่อ productId ก่อน
         const qtyByProductId = new Map<number, number>();
@@ -690,6 +838,36 @@ export const appRouter = router({
             });
           }
         }
+
+        // ถ้ามี customerId ให้ตรวจว่ามีอยู่จริงก่อนสร้างบิล (กันสร้างบิลหลอกแล้วค่อยมาพังทีหลัง)
+        if (input.customerId) {
+          const customer = await db.getCustomerById(input.customerId, orgId);
+          if (!customer) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: `ลูกค้าไม่พบ (ID: ${input.customerId})`,
+            });
+          }
+        }
+
+        // 1. สร้างบิล 2. ชำระเงินสำเร็จ (transaction = บันทึกบิล) 3. ตัดสต็อก — ห้ามตัดตอนเพิ่มเข้าตะกร้า/ยิงบาร์โค้ด
+        const cashierName = ctx.user.name || `User #${ctx.user.id}`;
+        const transaction = await db.createTransaction({
+          transactionNumber: input.transactionNumber,
+          cashierId: ctx.user.id,
+          cashierName: cashierName,
+          customerId: input.customerId,
+          subtotal: input.subtotal,
+          tax: input.tax,
+          discount: input.discount,
+          total: input.total,
+          paymentMethod: input.paymentMethod,
+          notes: input.notes,
+          organizationId: orgId,
+        });
+
+        const transactionId = (transaction as any).id;
+        console.log("[transactions.create] Transaction created with ID:", transactionId);
 
         // สร้าง order items (หนึ่งแถวต่อรายการในบิล — สำหรับใบเสร็จ)
         for (const item of input.items) {
@@ -733,11 +911,12 @@ export const appRouter = router({
           });
         }
 
-        // สร้าง Tax Invoice อัตโนมัติถ้าร้านจด VAT
+        // สร้าง Tax Invoice อัตโนมัติถ้าร้านจด VAT และมีการคิด VAT จริง (tax > 0)
         const companyProfile = await db.getCompanyProfile(orgId);
-        if (companyProfile?.vatRegistered) {
+        const vatAmount = parseFloat(input.tax || "0");
+        if (companyProfile?.vatRegistered && vatAmount > 0) {
           const subtotal = parseFloat(input.subtotal || "0");
-          const vat = parseFloat(input.tax || "0");
+          const vat = vatAmount;
           const total = parseFloat(input.total || "0");
           
           // ดึงข้อมูลลูกค้า (ถ้ามี)
@@ -1020,6 +1199,10 @@ export const appRouter = router({
           const q = input.transactionNumberSearch.trim().toLowerCase();
           transactions = transactions.filter((t) => (t.transactionNumber || "").toLowerCase().includes(q));
         }
+        // IMPORTANT: นับเฉพาะ "บิลจริง" ที่มีรายการสินค้าใน transactionItems อย่างน้อย 1 แถว
+        const ids = transactions.map((t) => Number(t.id)).filter((n) => Number.isFinite(n));
+        const hasItems = await db.getTransactionIdsWithAnyItems(ids);
+        transactions = transactions.filter((t) => hasItems.has(Number(t.id)));
         // จำนวนบิล = นับจาก orders เท่านั้น (ห้ามนับจาก items)
         const totalSales = transactions.reduce(
           (sum, t) => sum + parseFloat(t.total || "0"),
@@ -1080,11 +1263,14 @@ export const appRouter = router({
         start.setUTCHours(0, 0, 0, 0);
         const end = new Date(input.endDate);
         end.setUTCHours(23, 59, 59, 999);
-        const transactions = await db.getTransactionsByDateRange(
+        let transactions = await db.getTransactionsByDateRange(
           start,
           end,
           orgId
         );
+        const ids = transactions.map((t) => Number(t.id)).filter((n) => Number.isFinite(n));
+        const hasItems = await db.getTransactionIdsWithAnyItems(ids);
+        transactions = transactions.filter((t) => hasItems.has(Number(t.id)));
         
         const paymentMethods: Record<string, { count: number; total: number }> = {};
         
@@ -1116,6 +1302,9 @@ export const appRouter = router({
         let transactions = await db.getTransactionsByDateRange(start, end, orgId);
         const rid = (ctx as { reportRestrictCashierId?: number }).reportRestrictCashierId;
         if (rid != null) transactions = transactions.filter((t) => parseInt(String(t.cashierId), 10) === rid);
+        const ids = transactions.map((t) => Number(t.id)).filter((n) => Number.isFinite(n));
+        const hasItems = await db.getTransactionIdsWithAnyItems(ids);
+        transactions = transactions.filter((t) => hasItems.has(Number(t.id)));
         const dailySales: Record<string, { count: number; total: number }> = {};
         transactions.forEach((t) => {
           const date = new Date(t.createdAt).toISOString().split("T")[0];
@@ -1146,6 +1335,9 @@ export const appRouter = router({
         let transactions = await db.getTransactionsByDateRange(start, end, orgId);
         const rid = (ctx as { reportRestrictCashierId?: number }).reportRestrictCashierId;
         if (rid != null) transactions = transactions.filter((t) => parseInt(String(t.cashierId), 10) === rid);
+        const ids = transactions.map((t) => Number(t.id)).filter((n) => Number.isFinite(n));
+        const hasItems = await db.getTransactionIdsWithAnyItems(ids);
+        transactions = transactions.filter((t) => hasItems.has(Number(t.id)));
         
         const totalSales = transactions.reduce(
           (sum, t) => sum + parseFloat(t.total || "0"),
@@ -1220,6 +1412,10 @@ export const appRouter = router({
           const q = input.transactionNumberSearch.trim().toLowerCase();
           transactions = transactions.filter((t) => (t.transactionNumber || "").toLowerCase().includes(q));
         }
+        // ตัดบิลหลอก (ไม่มีรายการสินค้า)
+        const ids = transactions.map((t) => Number(t.id)).filter((n) => Number.isFinite(n));
+        const hasItems = await db.getTransactionIdsWithAnyItems(ids);
+        transactions = transactions.filter((t) => hasItems.has(Number(t.id)));
 
         // ใช้ cashierName จาก transaction โดยตรง (ไม่ต้อง JOIN users - ป้องกันชื่อเปลี่ยน)
         // ถ้า transaction เก่ายังไม่มี cashierName ให้ fallback ไป JOIN (backward compatibility)
@@ -1258,6 +1454,7 @@ export const appRouter = router({
                 total: t.total || "0", // ยอดรวมบิลจาก orders เท่านั้น
               };
             })
+            .filter((r) => (r.lineCount ?? 0) > 0)
             .sort(
               (a, b) =>
                 new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
@@ -1361,6 +1558,9 @@ export const appRouter = router({
         let transactions = await db.getTransactionsByDateRange(start, end, orgId);
         const rid = (ctx as { reportRestrictCashierId?: number }).reportRestrictCashierId;
         if (rid != null) transactions = transactions.filter((t) => parseInt(String(t.cashierId), 10) === rid);
+        const ids = transactions.map((t) => Number(t.id)).filter((n) => Number.isFinite(n));
+        const hasItems = await db.getTransactionIdsWithAnyItems(ids);
+        transactions = transactions.filter((t) => hasItems.has(Number(t.id)));
         const byCashier: Record<string, { billCount: number; totalSales: number; firstAt: Date; lastAt: Date }> = {};
         for (const t of transactions) {
           const k = String(t.cashierId);
@@ -1423,8 +1623,8 @@ export const appRouter = router({
       return db.getDiscounts(orgId);
     }),
     
-    active: publicProcedure.query(async ({ ctx }) => {
-      const orgId = ctx.user ? db.getUserOrganizationId(ctx.user) : null;
+    active: posProcedure.query(async ({ ctx }) => {
+      const orgId = db.getUserOrganizationId(ctx.user);
       return db.getActiveDiscounts(orgId);
     }),
     
@@ -1563,6 +1763,8 @@ export const appRouter = router({
             message: "กรุณาเชื่อมต่อร้านก่อน จึงจะเพิ่มผู้ใช้งานได้",
           });
         }
+        // Subscription Plan guard: Basic = 1 account only (owner)
+        await db.assertCanCreateStaffUserForOrg(orgId);
         return db.createUser(input, orgId, ctx.user.id, ctx.user.storeId);
       }),
     
@@ -1646,7 +1848,7 @@ export const appRouter = router({
       .input(z.object({ id: z.number() }))
       .query(({ input }) => db.getReceiptTemplate(input.id)),
     
-    getDefault: publicProcedure.query(() => db.getDefaultReceiptTemplate()),
+    getDefault: posProcedure.query(() => db.getDefaultReceiptTemplate()),
     
     create: adminProcedure
       .input(
@@ -1703,7 +1905,7 @@ export const appRouter = router({
       )
       .mutation(({ input }) => db.createDiscountCode(input)),
     
-    validate: publicProcedure
+    validate: posProcedure
       .input(z.object({ code: z.string() }))
       .query(async ({ input }) => {
         const code = await db.validateDiscountCode(input.code);
@@ -2036,7 +2238,7 @@ export const appRouter = router({
 
   // ============ TOPPINGS ============
   toppings: router({
-    list: protectedProcedure.query(async ({ ctx }) => {
+    list: posProcedure.query(async ({ ctx }) => {
       const orgId = db.getUserOrganizationId(ctx.user);
       return db.getToppings(orgId);
     }),
@@ -2125,6 +2327,9 @@ export const appRouter = router({
         })
       )
       .mutation(async ({ input, ctx }) => {
+        const orgId = db.getUserOrganizationId(ctx.user);
+        if (!orgId) throw new TRPCError({ code: "BAD_REQUEST", message: "ไม่พบข้อมูลร้าน" });
+        await db.assertCanManageStoreInvites(orgId);
         return db.createStoreInvite({
           code: input.code,
           storeId: input.storeId,
@@ -2135,7 +2340,12 @@ export const appRouter = router({
     // ดึงรหัสเข้าร้านทั้งหมดของร้าน
     getInvites: adminProcedure
       .input(z.object({ storeId: z.number() }))
-      .query(({ input }) => db.getStoreInvitesByStore(input.storeId)),
+      .query(async ({ input, ctx }) => {
+        const orgId = db.getUserOrganizationId(ctx.user);
+        if (!orgId) throw new TRPCError({ code: "BAD_REQUEST", message: "ไม่พบข้อมูลร้าน" });
+        await db.assertCanManageStoreInvites(orgId);
+        return db.getStoreInvitesByStore(input.storeId);
+      }),
 
     // อัปเดตสถานะรหัสเข้าร้าน
     updateInvite: adminProcedure
@@ -2145,7 +2355,11 @@ export const appRouter = router({
           active: z.boolean(),
         })
       )
-      .mutation(({ input }) => db.updateStoreInvite(input.id, input.active)),
+      .mutation(async ({ input, ctx }) => {
+        // NOTE: updateInvite ไม่มี storeId ใน input; แต่ถ้าเป็น Basic เราจะกันตั้งแต่ getInvites/createInvite แล้ว
+        // ยังอัปเดตได้เฉพาะ Premium เท่านั้นใน flow ปกติ
+        return db.updateStoreInvite(input.id, input.active);
+      }),
 
     // พนักงานเข้าร้าน (กรอกรหัส)
     join: protectedProcedure
@@ -2160,14 +2374,19 @@ export const appRouter = router({
           });
         }
 
-        // ตรวจสอบว่าร้านมีอยู่จริง
-        const store = await db.getStoreById(invite.storeId);
-        if (!store) {
+        // Subscription Plan guard: Basic = no staff join by invite
+        // ownerId (organization) ของร้าน = store.ownerId (ต้องหา store ก่อน)
+        const storeForJoin = await db.getStoreById(invite.storeId);
+        if (!storeForJoin) {
           throw new TRPCError({
             code: "NOT_FOUND",
             message: "ไม่พบร้านที่ระบุ",
           });
         }
+        await db.assertCanJoinStoreByInvite(invite.storeId, storeForJoin.ownerId);
+
+        // ตรวจสอบว่าร้านมีอยู่จริง
+        const store = storeForJoin;
 
         // อัปเดต storeId และ organizationId (owner ของร้าน) ของ user
         await db.joinStore(ctx.user.id, invite.storeId, store.ownerId);

@@ -64,6 +64,7 @@ export default function SystemSettings() {
   const [masterCodeInput, setMasterCodeInput] = useState("");
 
   // Queries
+  const { data: subscription } = trpc.subscription.my.useQuery();
   const { data: users, isLoading: usersLoading, refetch: refetchUsers } = trpc.users.list.useQuery();
   const { data: templates, isLoading: templatesLoading, refetch: refetchTemplates } = trpc.receiptTemplates.list.useQuery();
   const { data: stores, isLoading: storesLoading, refetch: refetchStores } = trpc.stores.list.useQuery();
@@ -85,6 +86,8 @@ export default function SystemSettings() {
       refetchUsers();
     },
   });
+
+  const isBasicPlan = (subscription as any)?.subscriptionPlan === "basic";
   const updateUserMutation = trpc.users.update.useMutation({
     onSuccess: () => {
       toast.success("อัปเดตผู้ใช้งานสำเร็จ");
@@ -334,7 +337,15 @@ export default function SystemSettings() {
             <div className="flex justify-end">
               <Dialog open={isUserOpen} onOpenChange={setIsUserOpen}>
                 <DialogTrigger asChild>
-                  <Button variant="add" onClick={() => {
+                  <Button
+                    variant="add"
+                    disabled={isBasicPlan}
+                    title={
+                      isBasicPlan
+                        ? "แพ็กเกจ Basic สร้างผู้ใช้งานได้ 1 บัญชีเท่านั้น (ไม่สามารถเพิ่มพนักงานได้)"
+                        : undefined
+                    }
+                    onClick={() => {
                     setEditingUserId(null);
                     setUserFormData({ name: "", email: "", phone: "", role: "cashier", password: "" });
                   }}>
@@ -754,6 +765,11 @@ export default function SystemSettings() {
                 <p className="text-muted-foreground mt-1">
                   สร้างร้านและรหัสสำหรับให้พนักงานเข้าร้าน
                 </p>
+                {isBasicPlan && (
+                  <p className="text-sm text-muted-foreground mt-2">
+                    แพ็กเกจ Basic ไม่รองรับการสร้าง/จัดการรหัสเข้าร้านสำหรับพนักงาน
+                  </p>
+                )}
               </div>
               <div className="flex gap-2">
                 <Button
@@ -848,6 +864,8 @@ export default function SystemSettings() {
                             <Button
                               variant="outline"
                               size="sm"
+                            disabled={isBasicPlan}
+                            title={isBasicPlan ? "แพ็กเกจ Basic ไม่รองรับการสร้างรหัสเข้าร้าน" : undefined}
                               onClick={() => {
                                 setSelectedStoreId(store.id);
                                 setInviteFormData({ code: "", storeId: store.id });
@@ -944,6 +962,8 @@ export default function SystemSettings() {
                             <Button
                               variant="outline"
                               size="sm"
+                              disabled={isBasicPlan}
+                              title={isBasicPlan ? "แพ็กเกจ Basic ไม่รองรับการดูรหัสเข้าร้าน" : undefined}
                               onClick={() => {
                                 setSelectedStoreId(store.id);
                                 refetchInvites();
@@ -974,47 +994,22 @@ export default function SystemSettings() {
             )}
           </TabsContent>
 
-          {/* แท็บ ระบบ - รหัสหลักสำหรับหน้าสร้างรหัสแอดมิน */}
+          {/* แท็บ ระบบ */}
           <TabsContent value="system" className="space-y-6 mt-6">
             <Card>
               <CardHeader>
                 <CardTitle className="flex items-center gap-2">
                   <Shield className="h-5 w-5" />
-                  รหัสสำหรับเข้าหน้าสร้างรหัสแอดมิน
+                  ระบบ
                 </CardTitle>
                 <CardDescription>
-                  เก็บรหัสหลักในระบบ ใช้เมื่อกด &quot;เข้าสู่ระบบสร้างรหัสแอดมิน&quot; ที่หน้า /create-admin-codes
-                  ครั้งแรกยังไม่มีใน DB จะใช้ ORDERA_MASTER_CODE จาก env
+                  หน้านี้เก็บค่าตั้งค่าระดับระบบ
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
-                {masterCodeConfig?.isConfigured && (
-                  <p className="text-sm text-muted-foreground">สถานะ: ตั้งค่าแล้ว (••••••••)</p>
-                )}
-                <div className="flex gap-2 flex-wrap items-end">
-                  <div className="flex-1 min-w-[200px] space-y-2">
-                    <Label htmlFor="masterCode">รหัสใหม่ (อย่างน้อย 8 ตัว)</Label>
-                    <Input
-                      id="masterCode"
-                      type="password"
-                      value={masterCodeInput}
-                      onChange={(e) => setMasterCodeInput(e.target.value)}
-                      placeholder="กรอกรหัสแล้วกดบันทึก"
-                    />
-                  </div>
-                  <Button
-                    onClick={() => {
-                      if (masterCodeInput.trim().length < 8) {
-                        toast.error("รหัสต้องมีอย่างน้อย 8 ตัวอักษร");
-                        return;
-                      }
-                      setMasterCodeMutation.mutate({ code: masterCodeInput });
-                    }}
-                    disabled={setMasterCodeMutation.isPending || masterCodeInput.trim().length < 8}
-                  >
-                    {setMasterCodeMutation.isPending ? "กำลังบันทึก..." : "บันทึก"}
-                  </Button>
-                </div>
+                <p className="text-sm text-muted-foreground">
+                  ระบบ “เข้าร้านด้วยรหัสแอดมิน/สร้างรหัสแอดมิน” ถูกนำออกแล้ว
+                </p>
               </CardContent>
             </Card>
           </TabsContent>

@@ -7,19 +7,19 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
 import { useQueryClient } from "@tanstack/react-query";
+import { Shield } from "lucide-react";
 
-export default function Login() {
+export default function SuperAdminLogin() {
   const [, setLocation] = useLocation();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const queryClient = useQueryClient();
   const utils = trpc.useUtils();
+
   const loginMutation = trpc.auth.login.useMutation({
     onSuccess: async () => {
-      // Clear all cache before login to ensure fresh data
       queryClient.clear();
       await utils.invalidate();
-      // Refetch user data
       await utils.auth.me.invalidate();
     },
   });
@@ -27,21 +27,18 @@ export default function Login() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      await loginMutation.mutateAsync({ email, password });
-      toast.success("เข้าสู่ระบบสำเร็จ");
-      // Wait a bit for cache to clear, then redirect
+      const res = await loginMutation.mutateAsync({ email: email.trim().toLowerCase(), password });
+      if ((res as any)?.role !== "superadmin") {
+        toast.error("บัญชีนี้ไม่ใช่ Super Admin");
+        return;
+      }
+      toast.success("เข้าสู่ระบบผู้ดูแลสำเร็จ");
       setTimeout(() => {
-        setLocation("/");
-        // Force reload to ensure all queries refetch
-        window.location.href = "/";
+        setLocation("/super-admin");
+        window.location.href = "/super-admin";
       }, 100);
     } catch (error: any) {
-      const msg = error?.message || "";
-      if (msg.includes("JWT_SECRET") || msg.includes("500")) {
-        toast.error("เกิดข้อผิดพลาดในระบบ กรุณาติดต่อผู้ดูแล (JWT_SECRET ไม่ได้ตั้งค่า)");
-      } else {
-        toast.error("อีเมลหรือรหัสผ่านไม่ถูกต้อง");
-      }
+      toast.error(error?.message || "อีเมลหรือรหัสผ่านไม่ถูกต้อง");
     }
   };
 
@@ -50,11 +47,13 @@ export default function Login() {
       <Card className="w-full max-w-md shadow-lg">
         <CardHeader className="space-y-3">
           <div className="flex items-center gap-4 justify-center mb-4">
-            <img src="/ordera-logo.svg" alt="Ordera" className="h-16 w-16 drop-shadow-lg" />
+            <div className="h-16 w-16 rounded-full bg-amber-100 flex items-center justify-center">
+              <Shield className="h-9 w-9 text-amber-600" />
+            </div>
             <div className="text-center">
-              <CardTitle className="text-3xl font-bold text-primary">Ordera</CardTitle>
+              <CardTitle className="text-2xl font-bold text-primary">Super Admin Login</CardTitle>
               <p className="text-sm text-muted-foreground mt-1">
-                ระบบจัดการร้านค้าของคุณ
+                หน้านี้แยกจากการเข้าสู่ระบบปกติ
               </p>
             </div>
           </div>
@@ -68,7 +67,7 @@ export default function Login() {
                 type="email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                placeholder="you@example.com"
+                placeholder="superadmin@example.com"
                 required
               />
             </div>
@@ -83,28 +82,16 @@ export default function Login() {
                 required
               />
             </div>
-            <Button
-              type="submit"
-              className="w-full"
-              disabled={loginMutation.isPending}
-            >
-              {loginMutation.isPending ? "กำลังเข้าสู่ระบบ..." : "เข้าสู่ระบบ"}
+            <Button type="submit" className="w-full" disabled={loginMutation.isPending}>
+              {loginMutation.isPending ? "กำลังเข้าสู่ระบบ..." : "เข้าสู่ระบบผู้ดูแล"}
             </Button>
             <Button
               type="button"
               variant="outline"
               className="w-full"
-              onClick={() => setLocation("/register")}
+              onClick={() => setLocation("/login")}
             >
-              สมัครสมาชิก
-            </Button>
-            <Button
-              type="button"
-              variant="secondary"
-              className="w-full"
-              onClick={() => setLocation("/signup-store")}
-            >
-              สมัครร้าน (รออนุมัติ)
+              ไปหน้าเข้าสู่ระบบปกติ
             </Button>
           </form>
         </CardContent>
@@ -112,3 +99,4 @@ export default function Login() {
     </div>
   );
 }
+

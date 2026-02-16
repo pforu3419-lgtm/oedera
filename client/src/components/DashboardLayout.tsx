@@ -16,6 +16,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { getLoginUrl } from "@/const";
+import { trpc } from "@/lib/trpc";
 import {
   LayoutDashboard,
   LogOut,
@@ -25,11 +26,13 @@ import {
   ShoppingCart,
   Settings as SettingsIcon,
   Store,
-  KeyRound,
   Receipt,
   History,
   Package,
   Palette,
+  Shield,
+  QrCode,
+  Loader2,
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useLocation } from "wouter";
@@ -44,9 +47,10 @@ import { cn } from "@/lib/utils";
 
 /** เมนูด้านบน (MainLayout) */
 const topNavItems = [
-  { icon: LayoutDashboard, label: "ภาพรวมร้าน", path: "/", roles: ["admin", "manager", "cashier", "user"], requiresStore: false },
-  { icon: KeyRound, label: "เข้าร้านด้วยรหัสแอดมิน", path: "/enter-admin-code", roles: ["user"], requiresStore: false, showOnlyWhenNoStore: true },
+  { icon: LayoutDashboard, label: "ภาพรวมร้าน", path: "/", roles: ["superadmin", "admin", "manager", "cashier", "user"], requiresStore: false },
+  { icon: Shield, label: "Super Admin", path: "/super-admin", roles: ["superadmin"], requiresStore: false },
   { icon: ShoppingCart, label: "ขายสินค้า", path: "/sales", roles: ["admin", "manager", "cashier"], requiresStore: true },
+  { icon: QrCode, label: "QR สมัครสมาชิก", path: "/member-qr", roles: ["admin", "manager", "cashier"], requiresStore: true },
   { icon: Package, label: "จัดการสินค้า", path: "/products", roles: ["admin", "manager"], requiresStore: true },
   { icon: Users, label: "ลูกค้า", path: "/customers", roles: ["admin", "manager"], requiresStore: true },
   { icon: Tag, label: "ส่วนลด", path: "/discounts", roles: ["admin", "manager"], requiresStore: true },
@@ -73,11 +77,18 @@ function filterMenuByUser(
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   const [location, setLocation] = useLocation();
-  const { loading, user } = useAuth();
+  const { loading, user, logout } = useAuth();
+
+  // Global access lock: ถ้าร้านไม่ active จะเข้า "ทุกหน้า" ไม่ได้ (ตาม requirement ล่าสุด)
+  const subscriptionQuery = trpc.subscription.my.useQuery(undefined, {
+    enabled: !!user && user.role !== "superadmin" && !!user.storeId,
+    retry: false,
+    refetchOnWindowFocus: false,
+  });
 
   useEffect(() => {
     if (user?.role === "user" && !user?.storeId) {
-      const allowed = ["/", "/enter-admin-code", "/login", "/register"];
+      const allowed = ["/", "/signup-store", "/login", "/register"];
       if (!allowed.includes(location)) setLocation("/");
       return;
     }
@@ -123,6 +134,57 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         </div>
       </div>
     );
+  }
+
+  // Super Admin ไม่ถูกล็อกด้วยสถานะร้าน
+  if (user.role !== "superadmin" && user.storeId) {
+    if (subscriptionQuery.isLoading) {
+      return (
+        <div className="min-h-screen flex items-center justify-center bg-background px-4">
+          <div className="flex items-center gap-3 text-muted-foreground">
+            <Loader2 className="h-5 w-5 animate-spin" />
+            กำลังตรวจสอบสถานะการใช้งาน...
+          </div>
+        </div>
+      );
+    }
+
+    const status = (subscriptionQuery.data as any)?.status as
+      | "active"
+      | "pending"
+      | "expired"
+      | "disabled"
+      | undefined;
+
+    if (status && status !== "active") {
+      const msg =
+        status === "expired"
+          ? "บัญชีของคุณหมดอายุ กรุณาต่ออายุเพื่อใช้งานต่อ"
+          : status === "pending"
+            ? "บัญชีของคุณอยู่ระหว่างรอการอนุมัติ (pending)"
+            : "บัญชีของคุณถูกปิดใช้งาน (disabled)";
+
+      return (
+        <div className="min-h-screen flex items-center justify-center bg-background px-4">
+          <div className="w-full max-w-lg rounded-xl border bg-card p-6 shadow-sm space-y-4">
+            <div className="text-xl font-bold">ไม่สามารถเข้าใช้งานระบบได้</div>
+            <div className="text-muted-foreground">{msg}</div>
+            <div className="flex flex-wrap gap-2 pt-2">
+              <Button variant="outline" onClick={() => window.location.reload()}>
+                โหลดใหม่
+              </Button>
+              <Button
+                onClick={() => {
+                  logout();
+                }}
+              >
+                ออกจากระบบ
+              </Button>
+            </div>
+          </div>
+        </div>
+      );
+    }
   }
 
   if (user.role === "cashier" && location !== "/sales") return null;

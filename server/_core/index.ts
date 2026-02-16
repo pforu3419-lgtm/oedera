@@ -1,6 +1,7 @@
 import express from "express";
 import { createServer } from "http";
 import net from "net";
+import os from "node:os";
 import fileUpload from "express-fileupload";
 import { createExpressMiddleware } from "@trpc/server/adapters/express";
 import { registerOAuthRoutes } from "./oauth";
@@ -60,6 +61,43 @@ async function startServer() {
     abortOnLimit: true,
     responseOnLimit: "File size limit exceeded (max 10MB)",
   }));
+
+  // Public helper: return LAN IPv4 for QR base URL (so mobile can open it)
+  // NOTE: This does not change any POS logic. It's just to help generate a reachable URL instead of localhost.
+  app.get("/api/public/lan-ip", (req, res) => {
+    try {
+      const ifaces = os.networkInterfaces();
+      const ips: string[] = [];
+      for (const name of Object.keys(ifaces)) {
+        const list = ifaces[name] || [];
+        for (const info of list) {
+          if (!info) continue;
+          // Node returns family as string in most versions; sometimes number. Handle both.
+          const isV4 =
+            info.family === "IPv4" || (typeof info.family === "number" && info.family === 4);
+          if (!isV4) continue;
+          if ((info as any).internal) continue;
+          const addr = String((info as any).address || "").trim();
+          if (!addr) continue;
+          ips.push(addr);
+        }
+      }
+      const host = req.get("host") || "";
+      const port = host.includes(":") ? host.split(":").pop() : "";
+      return res.json({
+        ok: true,
+        ips,
+        // best guess for the first usable IPv4 (most common for LAN)
+        ip: ips[0] || null,
+        port: port || null,
+      });
+    } catch (e) {
+      return res.status(500).json({
+        ok: false,
+        error: e instanceof Error ? e.message : "unknown error",
+      });
+    }
+  });
 
   if (process.env.NODE_ENV === "development") {
     const baseTestUsers = new Map<

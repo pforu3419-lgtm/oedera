@@ -161,6 +161,14 @@ export default function Register() {
             >
               กลับไปหน้าเข้าสู่ระบบ
             </Button>
+            <Button
+              type="button"
+              variant="secondary"
+              className="w-full"
+              onClick={() => setLocation("/signup-store")}
+            >
+              สมัครร้าน (owner)
+            </Button>
           </form>
         </CardContent>
       </Card>

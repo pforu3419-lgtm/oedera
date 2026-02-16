@@ -39,4 +39,6 @@ export const ENV = {
   smtpFromEmail: process.env.SMTP_FROM_EMAIL ?? "",
   // รหัสสำหรับเข้าหน้าสร้างรหัสแอดมิน (ถ้าว่าง = ปิดใช้)
   masterCodeForAdminCodes: process.env.ORDERA_MASTER_CODE ?? "",
+  // Super Admin (คุม Subscription/เปิด-ปิดร้าน) — ใส่เป็นอีเมลคั่นด้วย comma
+  superAdminEmails: process.env.ORDERA_SUPER_ADMIN_EMAILS ?? "",
 };

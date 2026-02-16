@@ -132,6 +132,39 @@ export default function Sales() {
   const [lastTransaction, setLastTransaction] = useState<any>(null);
   const [showPaymentDialog, setShowPaymentDialog] = useState(false);
   const [tempPaymentAmount, setTempPaymentAmount] = useState<string>("");
+
+  // Tax toggle (เฉพาะหน้าขาย): เปิด/ปิดระบบคำนวณภาษีตอนจ่ายเงิน
+  const orgId = user ? (user.organizationId ?? user.id) : null;
+  const taxKey = useMemo(
+    () => `ordera:salesTaxEnabled:${orgId ?? "unknown"}`,
+    [orgId],
+  );
+  const [taxEnabled, setTaxEnabled] = useState<boolean>(() => {
+    try {
+      const v = localStorage.getItem("ordera:salesTaxEnabled");
+      // legacy fallback (old key)
+      if (v != null) return v !== "0";
+    } catch {
+      // ignore
+    }
+    return true;
+  });
+  useEffect(() => {
+    try {
+      const v = localStorage.getItem(taxKey);
+      if (v != null) setTaxEnabled(v !== "0");
+      else setTaxEnabled(true);
+    } catch {
+      setTaxEnabled(true);
+    }
+  }, [taxKey]);
+  useEffect(() => {
+    try {
+      localStorage.setItem(taxKey, taxEnabled ? "1" : "0");
+    } catch {
+      // ignore
+    }
+  }, [taxKey, taxEnabled]);
   
   // Customer & Discount states
   const [selectedCustomer, setSelectedCustomer] = useState<SelectedCustomer | null>(null);
@@ -153,23 +186,33 @@ export default function Sales() {
   const scanInputRef = React.useRef<HTMLInputElement>(null);
   const utils = trpc.useUtils();
   
-  // Queries
-  const categoriesQuery = trpc.categories.list.useQuery();
-  const productsQuery = trpc.products.list.useQuery({
-    categoryId: selectedCategory,
-    search: searchTerm,
-  });
-  const toppingsQuery = trpc.toppings.list.useQuery();
-  const customersQuery = trpc.customers.list.useQuery({
-    search: customerSearch || undefined, // ถ้าเป็น empty string ให้เป็น undefined เพื่อแสดงทั้งหมด
-  });
+  // Subscription / POS access (สำคัญ: หมดอายุ/รออนุมัติ => Login ได้ แต่เข้า POS ไม่ได้)
+  const subscriptionQuery = trpc.subscription.my.useQuery(undefined, { enabled: !!user });
+  const posAllowed = (subscriptionQuery.data as any)?.status === "active";
+
+  // Queries (เปิดใช้งานเฉพาะตอนเข้าถึง POS ได้)
+  const categoriesQuery = trpc.categories.list.useQuery(undefined, { enabled: posAllowed });
+  const productsQuery = trpc.products.list.useQuery(
+    {
+      categoryId: selectedCategory,
+      search: searchTerm,
+    },
+    { enabled: posAllowed }
+  );
+  const toppingsQuery = trpc.toppings.list.useQuery(undefined, { enabled: posAllowed });
+  const customersQuery = trpc.customers.list.useQuery(
+    {
+      search: customerSearch || undefined, // ถ้าเป็น empty string ให้เป็น undefined เพื่อแสดงทั้งหมด
+    },
+    { enabled: posAllowed }
+  );
   const createTransactionMutation = trpc.transactions.create.useMutation();
-  const activeDiscountsQuery = trpc.discounts.active.useQuery();
+  const activeDiscountsQuery = trpc.discounts.active.useQuery(undefined, { enabled: posAllowed });
   const validateDiscountCodeQuery = trpc.discountCodes.validate.useQuery(
     { code: discountCode.trim() },
     { enabled: false }
   );
-  const receiptTemplateQuery = trpc.receiptTemplates.getDefault.useQuery();
+  const receiptTemplateQuery = trpc.receiptTemplates.getDefault.useQuery(undefined, { enabled: posAllowed });
 
   // Store Settings (สำหรับแสดงชื่อร้าน/โลโก้บน header เท่านั้น)
   const { data: storeSettings } = trpc.storeSettings.get.useQuery(undefined, {
@@ -308,7 +351,8 @@ export default function Sales() {
     0,
     subtotal - discount - discountFromCode - autoDiscount.amount - redeemed
   );
-  const tax = subtotalAfterDiscount * 0.07;
+  const taxRate = taxEnabled ? 0.07 : 0;
+  const tax = subtotalAfterDiscount * taxRate;
   const total = subtotalAfterDiscount + tax;
 
   const handleSelectCustomer = (customer: any) => {
@@ -397,7 +441,8 @@ export default function Sales() {
         items: cart.map((item) => ({
           productId: Number(item.productId),
           quantity: item.quantity,
-          unitPrice: item.price,
+          // API expects string (บาท) เช่น "25.00"
+          unitPrice: Number(item.price || 0).toFixed(2),
           discount: "0",
           subtotal: item.subtotal.toFixed(2),
           toppings: item.toppings || [],
@@ -437,10 +482,60 @@ export default function Sales() {
       // รีเซ็ต selectedCustomer หลังจาก delay เล็กน้อย
       setTimeout(() => setSelectedCustomer(null), 1000);
     } catch (error) {
-      toast.error("เกิดข้อผิดพลาดในการบันทึก");
+      const msg =
+        (error as any)?.message ||
+        (error as any)?.data?.zodError?.message ||
+        "เกิดข้อผิดพลาดในการบันทึก";
+      toast.error(msg);
       console.error(error);
     }
   };
+
+  // IMPORTANT: อย่า return ออกก่อนเรียก hooks ครบ (กัน React Hook order error)
+  const accessStatus = (subscriptionQuery.data as any)?.status as
+    | "active"
+    | "pending"
+    | "expired"
+    | "disabled"
+    | undefined;
+
+  if (subscriptionQuery.isLoading) {
+    return (
+      <DashboardLayout>
+        <div className="min-h-[60vh] flex items-center justify-center">
+          <div className="flex items-center gap-3 text-muted-foreground">
+            <Loader2 className="h-5 w-5 animate-spin" />
+            กำลังตรวจสอบสิทธิ์การใช้งาน...
+          </div>
+        </div>
+      </DashboardLayout>
+    );
+  }
+
+  if (accessStatus && accessStatus !== "active") {
+    const msg =
+      accessStatus === "expired"
+        ? "บัญชีของคุณหมดอายุ กรุณาต่ออายุเพื่อใช้งานต่อ"
+        : accessStatus === "pending"
+          ? "บัญชีของคุณอยู่ระหว่างรอการอนุมัติ (pending)"
+          : "บัญชีของคุณถูกปิดใช้งาน (disabled)";
+    return (
+      <DashboardLayout>
+        <div className="min-h-[70vh] flex items-center justify-center px-4">
+          <div className="w-full max-w-lg rounded-xl border bg-card p-6 shadow-sm space-y-4">
+            <div className="text-xl font-bold">ไม่สามารถเข้าใช้งาน POS ได้</div>
+            <div className="text-muted-foreground">{msg}</div>
+            <div className="flex flex-wrap gap-2 pt-2">
+              <Button variant="outline" onClick={() => setLocation("/")}>
+                กลับหน้าแรก
+              </Button>
+              <Button onClick={() => window.location.reload()}>โหลดใหม่</Button>
+            </div>
+          </div>
+        </div>
+      </DashboardLayout>
+    );
+  }
 
   return (
     <DashboardLayout>
@@ -709,6 +804,19 @@ export default function Sales() {
 
           {/* Summary */}
           <div className="p-6 border-t space-y-3 bg-gray-50">
+            <div className="flex items-center justify-between gap-3">
+              <div className="text-sm text-muted-foreground whitespace-nowrap">
+                คำนวณภาษี (7%)
+              </div>
+              <Button
+                type="button"
+                variant={taxEnabled ? "default" : "outline"}
+                size="sm"
+                onClick={() => setTaxEnabled((v) => !v)}
+              >
+                {taxEnabled ? "เปิด" : "ปิด"}
+              </Button>
+            </div>
             <div className="flex justify-between text-base">
               <span className="whitespace-nowrap">รวม</span>
               <span className="font-medium">฿{subtotal.toFixed(2)}</span>
