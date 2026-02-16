@@ -1,11 +1,25 @@
 export type ThemeMode = "light" | "dark";
 
+export type ForegroundTone = "white" | "black";
+export type ForegroundMode = "auto" | "white" | "black";
+
 export type UserThemePreference = {
   /** true = ใช้ธีมส่วนตัว, false = ใช้ธีมร้าน/ค่าเริ่มต้น */
   enabled: boolean;
   /** primaryColor แบบ #RRGGBB */
   primaryColor?: string;
   themeMode?: ThemeMode;
+  /**
+   * สีตัวหนังสือ/ไอคอนบนพื้นหลังสีธีม
+   * - auto = ให้ระบบเลือกดำ/ขาวให้ตามความอ่านง่าย
+   * - white/black = ผู้ใช้บังคับเอง
+   */
+  foregroundMode?: ForegroundMode;
+  /**
+   * legacy (backward compatible): เดิมเคยเก็บเป็น foregroundTone
+   * จะ map เข้า foregroundMode ตอนอ่านค่า
+   */
+  foregroundTone?: ForegroundTone;
 };
 
 const USER_THEME_KEY = "ordera:userTheme";
@@ -27,10 +41,21 @@ export function readUserThemePreference(): UserThemePreference | null {
       parsed.themeMode === "light" || parsed.themeMode === "dark"
         ? parsed.themeMode
         : undefined;
+    const foregroundMode =
+      parsed.foregroundMode === "auto" || parsed.foregroundMode === "white" || parsed.foregroundMode === "black"
+        ? parsed.foregroundMode
+        : undefined;
+    const legacyTone =
+      parsed.foregroundTone === "white" || parsed.foregroundTone === "black"
+        ? parsed.foregroundTone
+        : undefined;
+    const effectiveForegroundMode: ForegroundMode | undefined =
+      foregroundMode ?? (legacyTone ? legacyTone : undefined);
     return {
       enabled,
       primaryColor: primaryColor && isHexColor(primaryColor) ? primaryColor : undefined,
       themeMode,
+      foregroundMode: effectiveForegroundMode,
     };
   } catch {
     return null;
@@ -58,6 +83,51 @@ function hexToRgb(hex: string) {
   const g = parseInt(h.slice(2, 4), 16);
   const b = parseInt(h.slice(4, 6), 16);
   return { r, g, b };
+}
+
+function srgbToLinear(c: number) {
+  const cs = c / 255;
+  return cs <= 0.04045 ? cs / 12.92 : Math.pow((cs + 0.055) / 1.055, 2.4);
+}
+
+function relativeLuminance(hex: string) {
+  if (!isHexColor(hex)) return 0;
+  const { r, g, b } = hexToRgb(hex);
+  const R = srgbToLinear(r);
+  const G = srgbToLinear(g);
+  const B = srgbToLinear(b);
+  // WCAG relative luminance
+  return 0.2126 * R + 0.7152 * G + 0.0722 * B;
+}
+
+function contrastRatio(l1: number, l2: number) {
+  const lighter = Math.max(l1, l2);
+  const darker = Math.min(l1, l2);
+  return (lighter + 0.05) / (darker + 0.05);
+}
+
+/**
+ * เลือกสีตัวหนังสือ (ขาว/ดำ) ที่อ่านชัดที่สุดบนพื้นหลังสีนี้
+ * ใช้หลัก WCAG contrast ratio เลือกอันที่ได้คะแนนสูงกว่า
+ */
+export function pickReadableTextColor(bgHex: string): "#000000" | "#ffffff" {
+  if (!isHexColor(bgHex)) return "#ffffff";
+  const lb = relativeLuminance(bgHex);
+  const cWhite = contrastRatio(1, lb); // white luminance = 1
+  const cBlack = contrastRatio(0, lb); // black luminance = 0
+  return cBlack >= cWhite ? "#000000" : "#ffffff";
+}
+
+export function toneToHex(tone: ForegroundTone | undefined): "#000000" | "#ffffff" | undefined {
+  if (tone === "black") return "#000000";
+  if (tone === "white") return "#ffffff";
+  return undefined;
+}
+
+export function modeToHex(mode: ForegroundMode | undefined): "#000000" | "#ffffff" | undefined {
+  if (mode === "black") return "#000000";
+  if (mode === "white") return "#ffffff";
+  return undefined; // auto/undefined
 }
 
 function rgbToHex(r: number, g: number, b: number) {
@@ -153,25 +223,35 @@ export type ThemeCssVars = {
   product: string;
   ring: string;
   sidebar: string;
+  sidebarFg: string;
   sidebarAccent: string;
+  sidebarAccentFg: string;
   sidebarBorder: string;
   sidebarRing: string;
   chart1: string;
 };
 
-export function deriveThemeVars(primaryColor: string): ThemeCssVars {
+export function deriveThemeVars(
+  primaryColor: string,
+  opts?: { foregroundHex?: "#000000" | "#ffffff" }
+): ThemeCssVars {
   const primary = primaryColor;
-  const primaryFg = "#ffffff";
+  const forcedFg = opts?.foregroundHex;
+  const primaryFg = forcedFg ?? pickReadableTextColor(primary);
   // accent/border = เข้มลงนิดหน่อยเพื่อให้ hover/เส้นขอบชัด
   const sidebarAccent = shiftLightness(primary, -0.18);
   const sidebarBorder = shiftLightness(primary, -0.22);
+  const sidebarFg = forcedFg ?? pickReadableTextColor(primary);
+  const sidebarAccentFg = forcedFg ?? pickReadableTextColor(sidebarAccent);
   return {
     primary,
     primaryFg,
     product: primary,
     ring: primary,
     sidebar: primary,
+    sidebarFg,
     sidebarAccent,
+    sidebarAccentFg,
     sidebarBorder,
     sidebarRing: primary,
     chart1: primary,
@@ -194,24 +274,31 @@ const OVERRIDABLE_VARS = [
 ] as const;
 
 /** Apply/clear inline CSS variables for theme colors */
-export function applyThemePrimaryColor(primaryColor: string | null | undefined) {
+export function applyThemePrimaryColor(
+  primaryColor: string | null | undefined,
+  opts?: { foregroundMode?: ForegroundMode }
+) {
   const root = document.documentElement;
 
   if (!primaryColor || !isHexColor(primaryColor)) {
     for (const k of OVERRIDABLE_VARS) root.style.removeProperty(k);
+    // variables ที่เราตั้งเพิ่มเอง
+    root.style.removeProperty("--sidebar-foreground");
     return;
   }
 
-  const v = deriveThemeVars(primaryColor);
+  const foregroundHex = modeToHex(opts?.foregroundMode);
+  const v = deriveThemeVars(primaryColor, { foregroundHex });
   root.style.setProperty("--primary", v.primary);
   root.style.setProperty("--primary-foreground", v.primaryFg);
   root.style.setProperty("--product", v.product);
   root.style.setProperty("--ring", v.ring);
   root.style.setProperty("--sidebar", v.sidebar);
+  root.style.setProperty("--sidebar-foreground", v.sidebarFg);
   root.style.setProperty("--sidebar-primary", v.primary);
   root.style.setProperty("--sidebar-primary-foreground", v.primaryFg);
   root.style.setProperty("--sidebar-accent", v.sidebarAccent);
-  root.style.setProperty("--sidebar-accent-foreground", v.primaryFg);
+  root.style.setProperty("--sidebar-accent-foreground", v.sidebarAccentFg);
   root.style.setProperty("--sidebar-border", v.sidebarBorder);
   root.style.setProperty("--sidebar-ring", v.sidebarRing);
   root.style.setProperty("--chart-1", v.chart1);

@@ -94,7 +94,9 @@ async function upsertStoreSettingsByStoreId(
 
 const updateInputSchema = z.object({
   storeName: z.string().min(1, "กรุณากรอกชื่อร้าน").max(200).optional(),
-  logoUrl: z.string().max(2000).optional(),
+  // รองรับ URL ปกติ หรือ data URL (base64) จากการอัปโหลดแบบง่าย
+  // หมายเหตุ: ถ้าเป็น data URL ที่ยาวมาก ควรใช้ไฟล์ขนาดเล็ก/หรือใช้ storage URL
+  logoUrl: z.string().max(200000).optional(),
   primaryColor: z
     .string()
     .regex(/^#([0-9a-fA-F]{6})$/, "รูปแบบสีต้องเป็น #RRGGBB")

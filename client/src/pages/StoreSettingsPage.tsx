@@ -8,8 +8,14 @@ import { useAuth } from "@/_core/hooks/useAuth";
 import { trpc } from "@/lib/trpc";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
-import { ArrowLeft, Store } from "lucide-react";
+import { ArrowLeft, Store, Palette } from "lucide-react";
 import { useLocation } from "wouter";
+import {
+  readUserThemePreference,
+  type ForegroundMode,
+  type UserThemePreference,
+  writeUserThemePreference,
+} from "@/lib/theme";
 
 type ThemeMode = "light" | "dark";
 
@@ -17,6 +23,16 @@ export default function StoreSettingsPage() {
   const [, setLocation] = useLocation();
   const { user } = useAuth();
   const SYSTEM_DEFAULT_ORANGE = "#ea580c";
+  const MAX_LOGO_URL_LEN = 200000;
+  const [uploadingLogo, setUploadingLogo] = useState(false);
+  const [userThemePref, setUserThemePref] = useState<UserThemePreference>(() => {
+    return (
+      readUserThemePreference() ?? {
+        enabled: false,
+        foregroundMode: "auto",
+      }
+    );
+  });
 
   const enabled = !!user?.storeId;
   const { data, isLoading, refetch } = trpc.storeSettings.get.useQuery(undefined, {
@@ -50,6 +66,46 @@ export default function StoreSettingsPage() {
   const logoPreview = (form.logoUrl || "").trim() || "/ordera-logo-white.svg";
   const primary = (form.primaryColor || "").trim() || "#f97316";
   const previewStoreName = (form.storeName || "").trim() || "ชื่อร้าน";
+
+  const uploadLogoFile = async (file: File) => {
+    if (!file) return;
+    if (!file.type.startsWith("image/")) {
+      toast.error("กรุณาเลือกไฟล์รูปภาพ (PNG/JPG/WebP)");
+      return;
+    }
+    if (file.size > 10 * 1024 * 1024) {
+      toast.error("ไฟล์ใหญ่เกินไป (สูงสุด 10MB)");
+      return;
+    }
+
+    try {
+      setUploadingLogo(true);
+      const fd = new FormData();
+      fd.append("file", file);
+      const res = await fetch("/api/upload", {
+        method: "POST",
+        body: fd,
+        credentials: "include",
+      });
+      const json = (await res.json()) as { url?: string; error?: string };
+      if (!res.ok) {
+        throw new Error(json?.error || `Upload failed (${res.status})`);
+      }
+      const url = (json?.url || "").trim();
+      if (!url) throw new Error("อัปโหลดไม่สำเร็จ (ไม่ได้รับ URL)");
+      if (url.length > MAX_LOGO_URL_LEN) {
+        // มักเป็น data URL (base64) ที่ยาวมาก
+        throw new Error("รูปใหญ่เกินไป กรุณาใช้รูปไฟล์เล็กลง หรือใช้ลิงก์รูป (URL)");
+      }
+      setForm((s) => ({ ...s, logoUrl: url }));
+      toast.success("อัปโหลดโลโก้สำเร็จ");
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      toast.error(msg || "อัปโหลดไม่สำเร็จ");
+    } finally {
+      setUploadingLogo(false);
+    }
+  };
 
   return (
     <DashboardLayout>
@@ -132,12 +188,33 @@ export default function StoreSettingsPage() {
 
                   <div className="grid gap-4 md:grid-cols-2">
                     <div className="space-y-2">
-                      <Label htmlFor="logoUrl">โลโก้ (URL หรือรูปแบบ data URL)</Label>
+                      <Label htmlFor="logoUrl">โลโก้</Label>
+                      <div className="flex flex-col gap-2">
+                        <Input
+                          type="file"
+                          accept="image/png,image/jpeg,image/webp,image/gif"
+                          disabled={uploadingLogo}
+                          onChange={(e) => {
+                            const f = e.target.files?.[0];
+                            if (!f) return;
+                            void uploadLogoFile(f);
+                            // reset input so same file can be re-selected
+                            e.currentTarget.value = "";
+                          }}
+                        />
+                        <div className="text-xs text-muted-foreground">
+                          เลือกไฟล์ PNG/JPG/WebP ได้ (ระบบจะอัปโหลดและใส่ให้เป็นรูปเลย)
+                        </div>
+                      </div>
+                      <Label htmlFor="logoUrl" className="mt-2 block">
+                        หรือใส่ลิงก์รูป (URL / data URL)
+                      </Label>
                       <Input
                         id="logoUrl"
                         value={form.logoUrl}
                         onChange={(e) => setForm((s) => ({ ...s, logoUrl: e.target.value }))}
                         placeholder="เช่น https://... หรือ data:image/png;base64,..."
+                        disabled={uploadingLogo}
                       />
                       <div className="mt-3 rounded-lg border bg-sidebar p-4">
                         <div className="text-xs text-sidebar-foreground/80 mb-2">พรีวิวโลโก้</div>
@@ -228,6 +305,49 @@ export default function StoreSettingsPage() {
                           </div>
                         </div>
                       </div>
+                    </CardContent>
+                  </Card>
+
+                  <Card className="border shadow-sm">
+                    <CardHeader>
+                      <CardTitle className="flex items-center gap-2">
+                        <Palette className="h-5 w-5" />
+                        สีตัวหนังสือ/ไอคอน
+                      </CardTitle>
+                      <CardDescription>
+                        ตั้งค่าความอ่านง่าย (มีผลกับเครื่องนี้เท่านั้น) เลือกได้ 3 แบบ: ระบบจัดการให้ / บังคับขาว / บังคับดำ
+                      </CardDescription>
+                    </CardHeader>
+                    <CardContent className="space-y-2">
+                      <div className="flex flex-wrap gap-2">
+                        {(["auto", "white", "black"] as const).map((mode) => {
+                          const active = (userThemePref.foregroundMode ?? "auto") === mode;
+                          const label =
+                            mode === "auto" ? "ระบบจัดการให้" : mode === "white" ? "ขาว" : "ดำ";
+                          return (
+                            <Button
+                              key={mode}
+                              type="button"
+                              variant={active ? "default" : "outline"}
+                              onClick={() => {
+                                const next: UserThemePreference = {
+                                  ...userThemePref,
+                                  enabled: Boolean(userThemePref.enabled),
+                                  foregroundMode: mode as ForegroundMode,
+                                };
+                                setUserThemePref(next);
+                                writeUserThemePreference(next);
+                                toast.success("บันทึกสีตัวหนังสือ/ไอคอนแล้ว");
+                              }}
+                            >
+                              {label}
+                            </Button>
+                          );
+                        })}
+                      </div>
+                      <p className="text-xs text-muted-foreground">
+                        หมายเหตุ: ถ้าต้องการตั้งสีธีม (primary) และโหมด light/dark ให้ดูด้านบนในหน้านี้ได้เลย
+                      </p>
                     </CardContent>
                   </Card>
 

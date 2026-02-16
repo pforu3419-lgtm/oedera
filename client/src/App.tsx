@@ -99,14 +99,17 @@ function App() {
         ? storeMode
         : undefined;
 
-    return { primaryColor, themeMode };
+    // foregroundMode มีผลกับความอ่านง่าย จึงอนุญาตให้ตั้งได้แม้ไม่ได้เปิด "ธีมส่วนตัว"
+    const foregroundMode = (userPref as any)?.foregroundMode;
+
+    return { primaryColor, themeMode, foregroundMode };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [storeSettings?.primaryColor, storeSettings?.themeMode, userPrefTick]);
 
   useEffect(() => {
     // Apply color theme (inline CSS vars) — ไม่กระทบ logic POS
-    applyThemePrimaryColor(effective.primaryColor);
-  }, [effective.primaryColor]);
+    applyThemePrimaryColor(effective.primaryColor, { foregroundMode: effective.foregroundMode });
+  }, [effective.primaryColor, effective.foregroundMode]);
 
   return (
     <ErrorBoundary>

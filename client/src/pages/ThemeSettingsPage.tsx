@@ -10,6 +10,7 @@ import {
   isHexColor,
   readUserThemePreference,
   type ThemeMode,
+  type ForegroundMode,
   type UserThemePreference,
   writeUserThemePreference,
 } from "@/lib/theme";
@@ -35,6 +36,7 @@ export default function ThemeSettingsPage() {
         enabled: false,
         primaryColor: undefined,
         themeMode: undefined,
+        foregroundMode: "auto",
       }
     );
   }, []);
@@ -169,6 +171,29 @@ export default function ThemeSettingsPage() {
                   ถ้าไม่เลือก จะใช้ค่าเริ่มต้นจากร้าน/ระบบ
                 </p>
               </div>
+            </div>
+
+            <div className="space-y-2">
+              <Label>สีตัวหนังสือ/ไอคอน (บนพื้นหลังสีธีม)</Label>
+              <div className="flex flex-wrap gap-2">
+                {(["auto", "white", "black"] as const).map((mode) => {
+                  const active = (pref.foregroundMode ?? "auto") === mode;
+                  const label = mode === "auto" ? "ระบบจัดการให้" : mode === "white" ? "ขาว" : "ดำ";
+                  return (
+                    <Button
+                      key={mode}
+                      type="button"
+                      variant={active ? "default" : "outline"}
+                      onClick={() => setPref((s) => ({ ...s, foregroundMode: mode as ForegroundMode }))}
+                    >
+                      {label}
+                    </Button>
+                  );
+                })}
+              </div>
+              <p className="text-xs text-muted-foreground">
+                เลือกได้ 3 แบบ: ระบบจัดการให้ / บังคับขาว / บังคับดำ
+              </p>
             </div>
 
             <div className="flex flex-wrap gap-2 justify-end">
